@@ -411,6 +411,106 @@ async function fetchAll(token){
   setBar(100);
   STATE.user=user;STATE.prog=prog;STATE.subs=subs;STATE.asg=asg;STATE.rstats=rstats;
   buildDerived();
+  saveCache();
+}
+
+const CACHE_KEY="wk_cache_v1";
+const CACHE_MAX_AGE_MS=24*60*60*1000; // 24h
+
+// Compact encoding: subjects/assignments/review_stats as flat arrays (not full API objects)
+// to keep the cached payload well under localStorage limits (full raw data can exceed 20MB).
+function encodeCache(){
+  const TYPECODE={radical:"r",kanji:"k",vocabulary:"v",kana_vocabulary:"n"};
+  const compactSubs=STATE.subs.map(s=>[
+    s.id,TYPECODE[s.object]||"v",s.data.level,s.data.characters||"",s.data.slug||"",s.data.document_url||"",
+    s.data.component_subject_ids||[],
+    (s.data.meanings||[]).filter(m=>m.accepted_answer).map(m=>m.meaning),
+    (s.data.readings||[]).filter(r=>r.accepted_answer).map(r=>r.reading)
+  ]);
+  const compactAsg=STATE.asg.map(a=>[a.data.subject_id,a.data.srs_stage,a.data.started_at?1:0,a.data.unlocked_at?1:0]);
+  const compactRstats=STATE.rstats.map(r=>[r.data.subject_id,r.data.meaning_correct,r.data.meaning_incorrect,
+    r.data.meaning_current_streak,r.data.reading_correct,r.data.reading_incorrect,r.data.reading_current_streak,r.data.percentage_correct]);
+  const compactProg=STATE.prog.map(p=>[p.data.level,p.data.unlocked_at,p.data.created_at,p.data.passed_at]);
+  return{
+    ts:Date.now(),
+    user:{level:STATE.user.level,username:STATE.user.username,started_at:STATE.user.started_at},
+    prog:compactProg,subs:compactSubs,asg:compactAsg,rstats:compactRstats,
+    measuredLag:STATE.measuredLag||null
+  };
+}
+function decodeCache(c){
+  const TYPEMAP={r:"radical",k:"kanji",v:"vocabulary",n:"kana_vocabulary"};
+  const subs=c.subs.map(([id,t,level,characters,slug,document_url,component_subject_ids,meanings,readings])=>({
+    id,object:TYPEMAP[t]||"vocabulary",
+    data:{level,characters,slug,document_url,component_subject_ids,
+      meanings:meanings.map(m=>({meaning:m,accepted_answer:true,primary:true})),
+      readings:readings.map(r=>({reading:r,accepted_answer:true,primary:true}))}
+  }));
+  const asg=c.asg.map(([subject_id,srs_stage,started,unlocked])=>({
+    data:{subject_id,srs_stage,started_at:started?"1":null,unlocked_at:unlocked?"1":null}}));
+  const rstats=c.rstats.map(([subject_id,mc,mi,ms,rc,ri,rs,pct])=>({
+    data:{subject_id,meaning_correct:mc,meaning_incorrect:mi,meaning_current_streak:ms,
+      reading_correct:rc,reading_incorrect:ri,reading_current_streak:rs,percentage_correct:pct}}));
+  const prog=c.prog.map(([level,unlocked_at,created_at,passed_at])=>({data:{level,unlocked_at,created_at,passed_at}}));
+  return{user:c.user,prog,subs,asg,rstats,measuredLag:c.measuredLag};
+}
+
+function saveCache(){
+  try{
+    localStorage.setItem(CACHE_KEY,JSON.stringify(encodeCache()));
+  }catch(e){
+    console.warn("Cache save failed (quota or serialization issue):",e);
+  }
+}
+
+function loadCache(){
+  try{
+    const raw=localStorage.getItem(CACHE_KEY);
+    if(!raw)return null;
+    const parsed=JSON.parse(raw);
+    return{ts:parsed.ts,...decodeCache(parsed)};
+  }catch(e){return null;}
+}
+
+function cacheAgeLabel(ts){
+  const ms=Date.now()-ts;
+  const mins=Math.round(ms/60000);
+  if(mins<1)return"just now";
+  if(mins<60)return mins+"m ago";
+  const hrs=Math.round(mins/60);
+  if(hrs<24)return hrs+"h ago";
+  const days=Math.round(hrs/24);
+  return days+"d ago";
+}
+
+function applyCache(cache,token){
+  STATE={token};
+  STATE.user=cache.user;STATE.prog=cache.prog;STATE.subs=cache.subs;STATE.asg=cache.asg;STATE.rstats=cache.rstats;
+  if(cache.measuredLag)STATE.measuredLag=cache.measuredLag;
+  buildDerived();
+  $("#controls").classList.remove("dim");
+  if(cache.measuredLag){
+    const opt=$("#accMeasured");
+    opt.disabled=false;opt.value=String(cache.measuredLag);
+    opt.textContent=`Measured: → ${cache.measuredLag.toFixed(2)}d lag (cached)`;
+    $("#acc").value=String(cache.measuredLag);
+  }
+  render();
+  showCacheBanner(cache.ts);
+}
+
+function showCacheBanner(ts){
+  const stale=Date.now()-ts>CACHE_MAX_AGE_MS;
+  const bar=document.createElement("div");
+  bar.id="cacheBar";
+  bar.style.cssText=`font-family:var(--mono);font-size:11px;color:${stale?"var(--warn2)":"var(--dim)"};
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 14px;margin-top:14px;
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap`;
+  bar.innerHTML=`<span>${stale?"⚠ stale":"●"} showing cached results from ${cacheAgeLabel(ts)}${stale?" (over 24h old)":""}</span>`+
+    `<button id="cacheRefresh" class="ghost" type="button" style="margin-left:auto;padding:5px 12px;font-size:12px">Refresh now</button>`;
+  const old=$("#cacheBar");if(old)old.remove();
+  $("header").appendChild(bar);
+  $("#cacheRefresh").onclick=()=>$("#run").click();
 }
 
 function buildDerived(){
@@ -814,7 +914,11 @@ function getOpts(){
 $("#show").onclick=()=>{const k=$("#key");k.type=k.type==="password"?"text":"password";$("#show").textContent=k.type==="password"?"show":"hide";};
 // Load saved token on page start
 const _saved=localStorage.getItem("wk_token");if(_saved){$("#key").value=_saved;}
-$("#forget").onclick=e=>{e.preventDefault();localStorage.removeItem("wk_token");$("#key").value="";$("#forget").textContent="forgotten";};
+const _cache=loadCache();
+if(_cache&&_saved){
+  applyCache(_cache,_saved);
+}
+$("#forget").onclick=e=>{e.preventDefault();localStorage.removeItem("wk_token");localStorage.removeItem(CACHE_KEY);$("#key").value="";$("#forget").textContent="forgotten";const b=$("#cacheBar");if(b)b.remove();};
 $("#lpd").oninput=()=>$("#lpdv").textContent=$("#lpd").value;
 document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{
   document.querySelectorAll(".chip").forEach(x=>x.classList.remove("on"));c.classList.add("on");
@@ -846,6 +950,7 @@ $("#recalc").onclick=()=>{
     }
   }
   render();
+  if(STATE&&STATE.subs)saveCache();
 };
 ["lpd","levelup","order","acc"].forEach(id=>$("#"+id).addEventListener("change",()=>{if(STATE&&STATE.sub)render();}));
 
@@ -1096,6 +1201,7 @@ $("#run").onclick=async()=>{
   const token=$("#key").value.trim();
   if(!token){$("#errbox").innerHTML=`<div class="err">Paste your WaniKani API token first.</div>`;return;}
   $("#run").disabled=true;$("#controls").classList.add("dim");$("#results").classList.add("hide");
+  const oldBar=$("#cacheBar");if(oldBar)oldBar.remove();
   try{
     await fetchAll(token);
     localStorage.setItem("wk_token",token);
