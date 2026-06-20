@@ -917,9 +917,14 @@ function getOpts(){
 $("#show").onclick=()=>{const k=$("#key");k.type=k.type==="password"?"text":"password";$("#show").textContent=k.type==="password"?"show":"hide";};
 // Load saved token on page start
 const _saved=localStorage.getItem("wk_token");if(_saved){$("#key").value=_saved;}
-const _cache=loadCache();
-if(_cache&&_saved){
-  applyCache(_cache,_saved);
+try{
+  const _cache=loadCache();
+  if(_cache&&_saved){
+    applyCache(_cache,_saved);
+  }
+}catch(e){
+  console.warn("Cache restore failed, clearing stale cache:",e);
+  try{localStorage.removeItem(CACHE_KEY);}catch(e2){}
 }
 $("#forget").onclick=e=>{e.preventDefault();localStorage.removeItem("wk_token");localStorage.removeItem(CACHE_KEY);$("#key").value="";$("#forget").textContent="forgotten";const b=$("#cacheBar");if(b)b.remove();};
 $("#lpd").oninput=()=>$("#lpdv").textContent=$("#lpd").value;
