@@ -849,6 +849,49 @@ $("#recalc").onclick=()=>{
 };
 ["lpd","levelup","order","acc"].forEach(id=>$("#"+id).addEventListener("change",()=>{if(STATE&&STATE.sub)render();}));
 
+/* ================= ROMAJI -> HIRAGANA (live IME-style conversion) ================= */
+const ROMAJI_MAP={
+  a:"あ",i:"い",u:"う",e:"え",o:"お",
+  ka:"か",ki:"き",ku:"く",ke:"け",ko:"こ",kya:"きゃ",kyu:"きゅ",kyo:"きょ",
+  ga:"が",gi:"ぎ",gu:"ぐ",ge:"げ",go:"ご",gya:"ぎゃ",gyu:"ぎゅ",gyo:"ぎょ",
+  sa:"さ",shi:"し",si:"し",su:"す",se:"せ",so:"そ",sha:"しゃ",shu:"しゅ",sho:"しょ",sya:"しゃ",syu:"しゅ",syo:"しょ",
+  za:"ざ",ji:"じ",zi:"じ",zu:"ず",ze:"ぜ",zo:"ぞ",ja:"じゃ",ju:"じゅ",jo:"じょ",jya:"じゃ",jyu:"じゅ",jyo:"じょ",
+  ta:"た",chi:"ち",ti:"ち",tsu:"つ",tu:"つ",te:"て",to:"と",cha:"ちゃ",chu:"ちゅ",cho:"ちょ",tya:"ちゃ",tyu:"ちゅ",tyo:"ちょ",
+  da:"だ",di:"ぢ",du:"づ",de:"で",do:"ど",dya:"ぢゃ",dyu:"ぢゅ",dyo:"ぢょ",
+  na:"な",ni:"に",nu:"ぬ",ne:"ね",no:"の",nya:"にゃ",nyu:"にゅ",nyo:"にょ",
+  ha:"は",hi:"ひ",fu:"ふ",hu:"ふ",he:"へ",ho:"ほ",hya:"ひゃ",hyu:"ひゅ",hyo:"ひょ",
+  ba:"ば",bi:"び",bu:"ぶ",be:"べ",bo:"ぼ",bya:"びゃ",byu:"びゅ",byo:"びょ",
+  pa:"ぱ",pi:"ぴ",pu:"ぷ",pe:"ぺ",po:"ぽ",pya:"ぴゃ",pyu:"ぴゅ",pyo:"ぴょ",
+  fa:"ふぁ",fi:"ふぃ",fe:"ふぇ",fo:"ふぉ",
+  ma:"ま",mi:"み",mu:"む",me:"め",mo:"も",mya:"みゃ",myu:"みゅ",myo:"みょ",
+  ya:"や",yu:"ゆ",yo:"よ",
+  ra:"ら",ri:"り",ru:"る",re:"れ",ro:"ろ",rya:"りゃ",ryu:"りゅ",ryo:"りょ",
+  wa:"わ",wo:"を",wi:"うぃ",we:"うぇ",vu:"ゔ",
+};
+function convertRomajiToHiragana(input){
+  let s=input.toLowerCase().replace(/n'/g,"\x01");
+  let out="",i=0;
+  while(i<s.length){
+    const ch=s[i];
+    if(ch==="\x01"){out+="ん";i++;continue;}
+    if(!/[a-z]/.test(ch)){out+=ch;i++;continue;}
+    if(i+1<s.length&&ch===s[i+1]&&!"aeioun".includes(ch)){out+="っ";i++;continue;}
+    let matched=false;
+    for(const len of [3,2,1]){
+      const chunk=s.slice(i,i+len);
+      if(chunk.length===1&&chunk==="n")break;
+      if(ROMAJI_MAP[chunk]){out+=ROMAJI_MAP[chunk];i+=len;matched=true;break;}
+    }
+    if(matched)continue;
+    if(ch==="n"){
+      const next=s[i+1];
+      if(!next||!"aeiouy".includes(next)){out+="ん";i++;continue;}
+    }
+    out+=ch;i++;
+  }
+  return out;
+}
+
 /* ================= EXTRA STUDY (leech drill) ================= */
 let QUIZ=null; // {items:[{...subject leech info, prompts:[{kind:'meaning'|'reading',answered,correct}]}], idx, results:[]}
 
@@ -901,7 +944,7 @@ function checkAnswer(q,typed){
     const norm=normalizeAnswer(typed);
     return (q.sub.meanings||[]).some(m=>normalizeAnswer(m)===norm);
   } else {
-    const norm=kanaToCheck(typed);
+    const norm=kanaToCheck(convertRomajiToHiragana(typed));
     return (q.sub.readings||[]).some(r=>r===norm);
   }
 }
@@ -957,7 +1000,7 @@ function renderQuizCard(){
         <div class="qchar ${ (s.char||"").length>2 ? "small":"" }">${s.char||s.slug}</div>
       </div>
       <form class="qform" id="qform" autocomplete="off">
-        <input class="qinput" id="qinput" type="text" placeholder="${q.kind==='meaning'?'Type the meaning…':'答えを入力 (reading)…'}" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input class="qinput" id="qinput" type="text" placeholder="${q.kind==='meaning'?'Type the meaning…':'Type romaji — converts to かな'}" autocomplete="off" autocapitalize="off" spellcheck="false">
         <div class="qfeedback" id="qfeedback"></div>
         <div class="qbtnrow" id="qbtnrow"><button type="submit">Answer</button></div>
       </form>
@@ -967,6 +1010,16 @@ function renderQuizCard(){
       </div>
     </div>`;
   const input=$("#qinput");input.focus();
+  if(q.kind==="reading"){
+    input.addEventListener("input",()=>{
+      const caretAtEnd=input.selectionStart===input.value.length;
+      const converted=convertRomajiToHiragana(input.value);
+      if(converted!==input.value){
+        input.value=converted;
+        if(caretAtEnd)input.setSelectionRange(converted.length,converted.length);
+      }
+    });
+  }
   $("#qform").onsubmit=(e)=>{
     e.preventDefault();
     if(q.answered){ advanceQuiz(); return; }
