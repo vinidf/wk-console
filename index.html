@@ -109,6 +109,10 @@ input[type=range]{width:120px;accent-color:var(--gold)}
 .stat .v.gold{color:var(--gold)}
 .stat .k{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-top:2px}
 
+/* review load estimate */
+.reviewsec{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.reviewhead{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:2px}
+
 /* timeline */
 .rail{position:relative;margin-top:6px;padding-left:28px}
 .rail::before{content:"";position:absolute;left:8px;top:8px;bottom:8px;width:2px;
@@ -314,6 +318,15 @@ svg.chart{width:100%;height:145px;display:block}
             <div class="stat"><div class="v gold" id="stProj">–</div><div class="k">projected days/level</div></div>
           </div>
           <div class="srs" id="srsBars"></div>
+          <div class="reviewsec">
+            <div class="reviewhead">Review load estimate</div>
+            <div class="stats" id="reviewStats">
+              <div class="stat"><div class="v" id="revToday">–</div><div class="k">today</div></div>
+              <div class="stat"><div class="v" id="revWeek">–</div><div class="k">avg next 7d</div></div>
+              <div class="stat"><div class="v gold" id="revSteady">–</div><div class="k">steady-state avg</div></div>
+            </div>
+            <div class="chartwrap"><svg class="chart" id="reviewChart" viewBox="0 0 600 110" preserveAspectRatio="none"></svg></div>
+          </div>
         </div>
         <div class="panel" style="margin-top:18px">
           <h2>Level trajectory <span class="tag" id="trajTag"></span></h2>
@@ -430,7 +443,7 @@ function encodeCache(){
     (s.data.meanings||[]).filter(m=>m.accepted_answer).map(m=>m.meaning),
     (s.data.readings||[]).filter(r=>r.accepted_answer).map(r=>r.reading)
   ]);
-  const compactAsg=STATE.asg.map(a=>[a.data.subject_id,a.data.srs_stage,a.data.started_at?1:0,a.data.unlocked_at?1:0]);
+  const compactAsg=STATE.asg.map(a=>[a.data.subject_id,a.data.srs_stage,a.data.started_at?1:0,a.data.unlocked_at?1:0,a.data.available_at||null]);
   const compactRstats=STATE.rstats.map(r=>[r.data.subject_id,r.data.meaning_correct,r.data.meaning_incorrect,
     r.data.meaning_current_streak,r.data.reading_correct,r.data.reading_incorrect,r.data.reading_current_streak,r.data.percentage_correct]);
   const compactProg=STATE.prog.map(p=>[p.data.level,p.data.unlocked_at,p.data.created_at,p.data.passed_at]);
@@ -449,8 +462,8 @@ function decodeCache(c){
       meanings:meanings.map(m=>({meaning:m,accepted_answer:true,primary:true})),
       readings:readings.map(r=>({reading:r,accepted_answer:true,primary:true}))}
   }));
-  const asg=c.asg.map(([subject_id,srs_stage,started,unlocked])=>({
-    data:{subject_id,srs_stage,started_at:started?"1":null,unlocked_at:unlocked?"1":null}}));
+  const asg=c.asg.map(([subject_id,srs_stage,started,unlocked,available_at])=>({
+    data:{subject_id,srs_stage,started_at:started?"1":null,unlocked_at:unlocked?"1":null,available_at:available_at||null}}));
   const rstats=c.rstats.map(([subject_id,mc,mi,ms,rc,ri,rs,pct])=>({
     data:{subject_id,meaning_correct:mc,meaning_incorrect:mi,meaning_current_streak:ms,
       reading_correct:rc,reading_incorrect:ri,reading_current_streak:rs,percentage_correct:pct}}));
@@ -699,6 +712,158 @@ function project(opts){
   return reached;
 }
 
+/* ================= REVIEW LOAD PROJECTION ================= */
+// Reuses the same lesson-scheduling logic as project() but tracks WHEN each lesson happens
+// ("birth"), then runs every item (existing + future) through the real WK SRS stage pipeline
+// to estimate how many reviews land on each future day.
+const STAGE_INTERVALS=[4/24,8/24,1,2,7,14,30,120]; // days, stage1->2 ... stage8->9(burned)
+
+function projectReviews(opts,horizonDays){
+  const {perLevel,sub,user}=STATE;
+  const L0=user.level,GURU_K=opts.guruK,GURU_R=3.5,LPD=opts.lpd;
+  const levelup=opts.levelup,order=opts.order;
+  const R={},KU={},KG={},V={},aR={},aKU={},aKG={},aV={},radguru={},kguru={},ktot={};
+  let cur=L0;
+  const NOW=new Date();
+  const daysFromNow=iso=>iso?(new Date(iso)-NOW)/86400000:0;
+
+  // seed: every in-progress (not burned) item gets its real next-review day + current stage
+  const births=[];
+  for(const a of STATE.asg){
+    const d=a.data,s=sub[d.subject_id];if(!s)continue;
+    if(d.started_at&&d.srs_stage>0&&d.srs_stage<9){
+      const nextDay=Math.max(0,daysFromNow(d.available_at));
+      births.push({day:nextDay,stage:d.srs_stage});
+    }
+  }
+
+  ktot[L0]=perLevel[L0].kUn+perLevel[L0].kGated;kguru[L0]=[];
+  for(const a of STATE.asg){
+    const d=a.data,s=sub[d.subject_id];if(!s)continue;
+    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(stageToGuruDays(d.srs_stage));
+    if(d.unlocked_at&&!d.started_at){
+      const lv=s.level;
+      if(s.type==="radical"){R[lv]=(R[lv]||0)+1;aR[lv]=-999;}
+      else if(s.type==="kanji"){if(s.gated){KG[lv]=(KG[lv]||0)+1;aKG[lv]=-999;}else{KU[lv]=(KU[lv]||0)+1;aKU[lv]=-999;}}
+      else{V[lv]=(V[lv]||0)+1;aV[lv]=-999;}
+    }
+  }
+  radguru[L0]=-999;
+
+  function initLevel(l,day){
+    const p=perLevel[l];R[l]=p.rad;KU[l]=p.kUn;KG[l]=p.kGated;V[l]=p.vocab;ktot[l]=p.kUn+p.kGated;
+    aR[l]=day;aKU[l]=day;aKG[l]=1e9;aV[l]=1e9;kguru[l]=[];radguru[l]=1e9;
+  }
+  function allLevels(){return[...new Set([...Object.keys(R),...Object.keys(KU),...Object.keys(KG),...Object.keys(V)].map(Number))].sort((a,b)=>a-b);}
+  const kd=(l,day)=>(kguru[l]||[]).reduce((n,g)=>n+(g<=day?1:0),0);
+  const passed=(l,day)=>kd(l,day)>=Math.ceil(0.9*ktot[l]);
+  function avail(kind,day){return allLevels().reduce((n,l)=>{
+    if(kind==="R")return n+(R[l]>0&&day>=aR[l]?R[l]:0);
+    if(kind==="K")return n+((KU[l]>0&&day>=aKU[l]?KU[l]:0)+(KG[l]>0&&day>=aKG[l]?KG[l]:0));
+    return n+(V[l]>0&&day>=aV[l]?V[l]:0);
+  },0);}
+  function bestOf(kind,day){
+    for(const l of allLevels()){
+      if(kind==="R"&&R[l]>0&&day>=aR[l])return l;
+      if(kind==="K"&&((KU[l]>0&&day>=aKU[l])||(KG[l]>0&&day>=aKG[l])))return l;
+      if(kind==="V"&&V[l]>0&&day>=aV[l])return l;
+    }return null;
+  }
+  function doLesson(kind,l,day){
+    if(kind==="R"){R[l]--;if(R[l]===0&&radguru[l]>=1e9){radguru[l]=day+GURU_R;aKG[l]=radguru[l];}}
+    else if(kind==="K"){if(KU[l]>0&&day>=aKU[l])KU[l]--;else KG[l]--;(kguru[l]=kguru[l]||[]).push(day+GURU_K);}
+    else V[l]--;
+    births.push({day:day+STAGE_INTERVALS[0],stage:1}); // first review after the stage-1 interval
+  }
+  function interleaveSlots(day){
+    const ar=avail("R",day),ak=avail("K",day),av=avail("V",day);const total=ar+ak+av;if(!total)return[];
+    const floored=[["R",ar],["K",ak],["V",av]].map(([t,n])=>[t,Math.floor(n/total*LPD),n/total*LPD-Math.floor(n/total*LPD)]);
+    let assigned=floored.reduce((s,[,f])=>s+f,0);floored.sort((a,b)=>b[2]-a[2]);
+    for(let i=0;i<LPD-assigned&&i<floored.length;i++)floored[i][1]++;
+    const slots=[];for(const[t,c]of floored)for(let i=0;i<c;i++)slots.push(t);
+    return slots.filter(t=>(t==="R"?ar:t==="K"?ak:av)>0);
+  }
+
+  let specialDayPending=null,day=0;
+  while(day<=horizonDays+30){ // a little buffer past horizon so late lessons' first reviews aren't cut off
+    if(specialDayPending!=null){
+      const L=specialDayPending;specialDayPending=null;
+      if(levelup==="radicals"&&R[L]>0){
+        const n=R[L];R[L]=0;radguru[L]=day+GURU_R;aKG[L]=radguru[L];
+        for(let i=0;i<n;i++)births.push({day:day+STAGE_INTERVALS[0],stage:1});
+        day++;continue;
+      } else if(levelup==="kanji"){
+        const done=KU[L]||0;
+        if(done>0){for(let i=0;i<done;i++){(kguru[L]=kguru[L]||[]).push(day+GURU_K);births.push({day:day+STAGE_INTERVALS[0],stage:1});}KU[L]=0;}
+        day++;continue;
+      }
+    }
+    if(order==="strict"){
+      for(let i=0;i<LPD;i++){
+        let best=null;
+        for(const l of allLevels()){
+          const c=[];
+          if(R[l]>0&&day>=aR[l])c.push([l,0,"R"]);
+          if((KU[l]>0&&day>=aKU[l])||(KG[l]>0&&day>=aKG[l]))c.push([l,1,"K"]);
+          if(V[l]>0&&day>=aV[l])c.push([l,2,"V"]);
+          for(const x of c)if(!best||x[0]<best[0]||(x[0]===best[0]&&x[1]<best[1]))best=x;
+        }
+        if(!best)break;doLesson(best[2],best[0],day);
+      }
+    } else if(order==="kanji"){
+      for(let i=0;i<LPD;i++){
+        let l=bestOf("R",day);if(l!=null){doLesson("R",l,day);continue;}
+        l=bestOf("K",day);if(l!=null){doLesson("K",l,day);continue;}
+        l=bestOf("V",day);if(l!=null){doLesson("V",l,day);continue;}break;
+      }
+    } else {
+      const slots=interleaveSlots(day);
+      for(const kind of slots){const l=bestOf(kind,day);if(l!=null)doLesson(kind,l,day);}
+      let filled=slots.length;
+      while(filled<LPD){
+        let l=bestOf("R",day);if(l){doLesson("R",l,day);filled++;continue;}
+        l=bestOf("K",day);if(l){doLesson("K",l,day);filled++;continue;}
+        l=bestOf("V",day);if(l){doLesson("V",l,day);filled++;continue;}break;
+      }
+    }
+    let leveled=false;
+    while(cur<60&&passed(cur,day)){aV[cur]=day;cur++;initLevel(cur,day);leveled=true;}
+    if(leveled&&levelup!=="default")specialDayPending=cur;
+    if(cur>=60)break;
+    day++;
+  }
+
+  // Run every item through the SRS pipeline, tallying reviews per day.
+  // accuracy comes from opts.guruK indirectly — convert back to an approximate pass probability.
+  // guruK days for kanji ranges ~4.0(90%) to ~5.5(75%); invert that mapping here for a single pass-rate used across all types.
+  const accuracy=guruKToAccuracy(opts.guruK);
+  const daily=new Array(horizonDays+1).fill(0);
+  for(const b of births){
+    let stage=b.stage,t=b.day,guard=0;
+    while(stage<9&&t<=horizonDays&&guard<200){
+      guard++;
+      if(t<0)t=0;
+      const reviewDay=Math.round(t);
+      if(reviewDay>horizonDays)break;
+      daily[reviewDay]++;
+      const ok=Math.random()<accuracy;
+      const nextStage=ok?stage+1:Math.max(1,stage-(stage>=5?2:1));
+      const interval=nextStage<9?STAGE_INTERVALS[nextStage-1]:null;
+      stage=nextStage;
+      if(!interval)break;
+      t=t+interval;
+    }
+  }
+  return daily;
+}
+function guruKToAccuracy(guruK){
+  // inverse of computeRealAccuracy's piecewise mapping (4.0d->90%, 4.5d->85%, 5.5d->75%)
+  if(guruK<=4.0)return 0.90;
+  if(guruK<=4.5)return 0.90-(guruK-4.0)/0.5*0.05;
+  if(guruK<=5.5)return 0.85-(guruK-4.5)/1.0*0.10;
+  return 0.75;
+}
+
 const READING={
   10:["N5","~95% of N5 kanji. Basic sentences with furigana; NHK Easy with support."],
   16:["N4","N4 threshold. Simple graded readers, NHK Easy, short texts."],
@@ -735,6 +900,7 @@ function render(){
   renderSRS();
   renderRail(reached);
   renderChart(reached);
+  renderReviews(o);
   leechPage=0;renderLeeches();
 
   const levelupLabel={default:"default lesson flow on level-up",radicals:"radicals first on level-up",kanji:"ungated kanji first on level-up"}[o.levelup];
@@ -813,6 +979,50 @@ function renderChart(reached){
   const c=document.createElementNS(ns,"circle");c.setAttribute("class","pt");
   c.setAttribute("cx",x(pts[pts.length-1][0]));c.setAttribute("cy",y(pts[pts.length-1][1]));c.setAttribute("r",3);
   svg.appendChild(c);
+}
+
+function renderReviews(o){
+  const HORIZON=120; // 4 months out is enough to see steady-state
+  const daily=projectReviews(o,HORIZON);
+
+  // 7-day rolling average for smoother readout
+  function rollAvg(arr,center,window){
+    let s=0,n=0;
+    for(let i=Math.max(0,center-window);i<=Math.min(arr.length-1,center+window);i++){s+=arr[i];n++;}
+    return n?s/n:0;
+  }
+  const smoothed=daily.map((_,i)=>rollAvg(daily,i,3));
+
+  const today=Math.round(daily[0]);
+  const week=smoothed.slice(0,7).reduce((a,b)=>a+b,0)/7;
+  const steady=smoothed.slice(HORIZON-14,HORIZON).reduce((a,b)=>a+b,0)/14; // last 2 weeks of horizon as steady-state proxy
+
+  $("#revToday").textContent=today;
+  $("#revWeek").textContent=Math.round(week);
+  $("#revSteady").textContent=Math.round(steady);
+
+  // chart
+  const W=600,H=110,pL=26,pB=16,pT=6,pR=6;
+  const maxY=Math.max(...smoothed,1)*1.15;
+  const x=d=>pL+(d/HORIZON)*(W-pL-pR);
+  const y=v=>pT+(1-v/maxY)*(H-pT-pB);
+  const svg=$("#reviewChart");svg.innerHTML="";
+  const ns="http://www.w3.org/2000/svg";
+  // gridlines at 0, mid, max
+  for(const frac of [0,0.5,1]){
+    const val=maxY*frac, yy=y(val);
+    const gl=document.createElementNS(ns,"line");gl.setAttribute("class","gl");
+    gl.setAttribute("x1",pL);gl.setAttribute("x2",W-pR);gl.setAttribute("y1",yy);gl.setAttribute("y2",yy);svg.appendChild(gl);
+    const t=document.createElementNS(ns,"text");t.setAttribute("x",2);t.setAttribute("y",yy+3);t.textContent=Math.round(val);svg.appendChild(t);
+  }
+  for(let m=0;m<=HORIZON;m+=30){
+    const xx=x(m);
+    const t=document.createElementNS(ns,"text");t.setAttribute("x",xx);t.setAttribute("y",H-2);t.setAttribute("text-anchor","middle");
+    t.textContent=addDays(m).toLocaleDateString(undefined,{month:"short",day:"numeric"});svg.appendChild(t);
+  }
+  const path=document.createElementNS(ns,"path");path.setAttribute("class","ln");
+  path.setAttribute("d","M"+smoothed.map((v,i)=>x(i).toFixed(1)+" "+y(v).toFixed(1)).join(" L"));
+  svg.appendChild(path);
 }
 
 function renderLeeches(){
