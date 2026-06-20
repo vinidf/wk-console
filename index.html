@@ -112,6 +112,7 @@ input[type=range]{width:120px;accent-color:var(--gold)}
 /* review load estimate */
 .reviewsec{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
 .reviewhead{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:2px}
+.capctl{margin-bottom:4px}
 
 /* timeline */
 .rail{position:relative;margin-top:6px;padding-left:28px}
@@ -333,6 +334,22 @@ svg.chart{width:100%;height:145px;display:block}
           <div class="chartwrap"><svg class="chart" id="chart" viewBox="0 0 600 145" preserveAspectRatio="none"></svg></div>
           <div class="assume" id="assume"></div>
         </div>
+        <div class="panel" style="margin-top:18px">
+          <h2>Daily review cap <span class="tag">backlog impact</span></h2>
+          <div class="capctl">
+            <div class="field">
+              <label>Cap (max reviews/day, Anki-style)</label>
+              <div class="slidewrap"><input id="revcap" type="range" min="10" max="300" step="5" value="45"><span class="lpd" id="revcapv">45</span></div>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="stat"><div class="v" id="capBacklogEOY">–</div><div class="k">backlog Dec 31</div></div>
+            <div class="stat"><div class="v" id="capBacklogPeak">–</div><div class="k">peak backlog</div></div>
+            <div class="stat"><div class="v gold" id="capVerdict">–</div><div class="k">stabilizes?</div></div>
+          </div>
+          <div class="chartwrap"><svg class="chart" id="capChart" viewBox="0 0 600 110" preserveAspectRatio="none"></svg></div>
+          <div class="assume" id="capAssume"></div>
+        </div>
       </section>
 
       <section>
@@ -407,6 +424,17 @@ async function wkAll(path,label){
 }
 
 function stageToGuruDays(s){return s>=5?0:({1:3.5,2:3.25,3:2.9,4:2.0}[s]??3.5);}
+// Precise days-until-Guru for an in-progress item, anchored to its REAL next review (available_at).
+// After the available_at review (which advances stage S->S+1 if passed), these are the remaining
+// hours of SRS intervals to climb to Guru (stage 5): stage4->0, stage3->47, stage2->70, stage1->78.
+// Overdue reviews (available_at in the past) are treated as doable now (day 0).
+const GURU_REMAIN_AFTER_H={1:8+23+47,2:23+47,3:47,4:0};
+function preciseGuruDay(stage,availableAt,nowMs){
+  if(stage>=5)return 0;
+  if(!availableAt)return stageToGuruDays(stage); // fallback if no schedule data
+  const daysUntil=Math.max(0,(new Date(availableAt)-nowMs)/86400000);
+  return daysUntil+(GURU_REMAIN_AFTER_H[stage]||0)/24;
+}
 
 async function fetchAll(token){
   STATE={token};
@@ -589,11 +617,12 @@ function project(opts){
   const levelup=opts.levelup,order=opts.order;
   const R={},KU={},KG={},V={},aR={},aKU={},aKG={},aV={},radguru={},kguru={},ktot={},reached={};
   let cur=L0;
+  const NOW=Date.now();
 
   ktot[L0]=perLevel[L0].kUn+perLevel[L0].kGated;kguru[L0]=[];
   for(const a of STATE.asg){
     const d=a.data,s=sub[d.subject_id];if(!s)continue;
-    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(stageToGuruDays(d.srs_stage));
+    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW));
     if(d.unlocked_at&&!d.started_at){
       const lv=s.level;
       if(s.type==="radical"){R[lv]=(R[lv]||0)+1;aR[lv]=-999;}
@@ -640,27 +669,36 @@ function project(opts){
     else V[l]--;
   }
 
-  // Build proportional slot sequence for one day's LPD lessons (WK interleave)
+  // Balanced interleave for one day's LPD lessons. Calibrated to real WK behaviour: minority
+  // types (radicals, kanji) get guaranteed representation (~1 per 5 lessons when available)
+  // rather than strict pool-proportional, which starves kanji late in a level. Matches the
+  // observed "1 kanji + 1 radical + 3 vocab per 5" mix; falls back to proportional when a type
+  // dominates the pool (e.g. right after a level-up, when vocab is still locked).
   function interleaveSlots(day){
     const ar=avail("R",day),ak=avail("K",day),av=avail("V",day);
     const total=ar+ak+av;if(!total)return[];
-    // Assign slots proportionally, rounding so they sum to LPD
+    const guar=Math.max(1,Math.round(LPD/5));
+    let kN=ak>0?Math.max(Math.min(ak,guar),Math.round(ak/total*LPD)):0;
+    let rN=ar>0?Math.max(Math.min(ar,guar),Math.round(ar/total*LPD)):0;
+    let vN=LPD-kN-rN;
+    if(vN<0){ // K+R guarantees overflow budget (pool almost all K/R): pure proportional
+      kN=Math.min(ak,Math.round(ak/total*LPD));
+      rN=Math.min(ar,Math.round(ar/total*LPD));
+      vN=LPD-kN-rN;
+    }
+    vN=Math.max(0,Math.min(vN,av));
+    let used=kN+rN+vN; // fill any leftover (vocab capped by availability) into K then R then V
+    while(used<LPD){
+      if(ak>kN){kN++;used++;continue;}
+      if(ar>rN){rN++;used++;continue;}
+      if(av>vN){vN++;used++;continue;}
+      break;
+    }
     const slots=[];
-    let rem=LPD,remT=total;
-    // round by largest-remainder method
-    const types=[["R",ar],["K",ak],["V",av]];
-    const raw=types.map(([t,n])=>[t,n/total*LPD]);
-    const floored=raw.map(([t,v])=>[t,Math.floor(v),v-Math.floor(v)]);
-    let assigned=floored.reduce((s,[,f])=>s+f,0);
-    const need=LPD-assigned;
-    floored.sort((a,b)=>b[2]-a[2]);
-    for(let i=0;i<need&&i<floored.length;i++)floored[i][1]++;
-    // build slot list
-    for(const [t,count] of floored)for(let i=0;i<count;i++)slots.push(t);
-    // cap to actual available (don't assign R slots if no R items)
-    return slots.filter(t=>{
-      if(t==="R")return ar>0;if(t==="K")return ak>0;return av>0;
-    });
+    for(let i=0;i<rN;i++)slots.push("R");
+    for(let i=0;i<kN;i++)slots.push("K");
+    for(let i=0;i<vN;i++)slots.push("V");
+    return slots;
   }
 
   let specialDayPending=null,day=0;
@@ -718,7 +756,11 @@ function project(opts){
 // to estimate how many reviews land on each future day.
 const STAGE_INTERVALS=[4/24,8/24,1,2,7,14,30,120]; // days, stage1->2 ... stage8->9(burned)
 
-function projectReviews(opts,horizonDays){
+// Shared helper: simulates the lesson schedule (same engine as project()) and returns the
+// full list of "births" — every existing item's real next-review (anchored to available_at)
+// plus every future lesson's first review, each as {day, stage}. Used by both the unbounded
+// review-load estimate and the capped-queue backlog simulator so they stay consistent.
+function getLessonBirths(opts,horizonDays){
   const {perLevel,sub,user}=STATE;
   const L0=user.level,GURU_K=opts.guruK,GURU_R=3.5,LPD=opts.lpd;
   const levelup=opts.levelup,order=opts.order;
@@ -745,7 +787,7 @@ function projectReviews(opts,horizonDays){
   ktot[L0]=perLevel[L0].kUn+perLevel[L0].kGated;kguru[L0]=[];
   for(const a of STATE.asg){
     const d=a.data,s=sub[d.subject_id];if(!s)continue;
-    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(stageToGuruDays(d.srs_stage));
+    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW.getTime()));
     if(d.unlocked_at&&!d.started_at){
       const lv=s.level;
       if(s.type==="radical"){R[lv]=(R[lv]||0)+1;aR[lv]=-999;}
@@ -782,11 +824,19 @@ function projectReviews(opts,horizonDays){
   }
   function interleaveSlots(day){
     const ar=avail("R",day),ak=avail("K",day),av=avail("V",day);const total=ar+ak+av;if(!total)return[];
-    const floored=[["R",ar],["K",ak],["V",av]].map(([t,n])=>[t,Math.floor(n/total*LPD),n/total*LPD-Math.floor(n/total*LPD)]);
-    let assigned=floored.reduce((s,[,f])=>s+f,0);floored.sort((a,b)=>b[2]-a[2]);
-    for(let i=0;i<LPD-assigned&&i<floored.length;i++)floored[i][1]++;
-    const slots=[];for(const[t,c]of floored)for(let i=0;i<c;i++)slots.push(t);
-    return slots.filter(t=>(t==="R"?ar:t==="K"?ak:av)>0);
+    const guar=Math.max(1,Math.round(LPD/5));
+    let kN=ak>0?Math.max(Math.min(ak,guar),Math.round(ak/total*LPD)):0;
+    let rN=ar>0?Math.max(Math.min(ar,guar),Math.round(ar/total*LPD)):0;
+    let vN=LPD-kN-rN;
+    if(vN<0){kN=Math.min(ak,Math.round(ak/total*LPD));rN=Math.min(ar,Math.round(ar/total*LPD));vN=LPD-kN-rN;}
+    vN=Math.max(0,Math.min(vN,av));
+    let used=kN+rN+vN;
+    while(used<LPD){if(ak>kN){kN++;used++;continue;}if(ar>rN){rN++;used++;continue;}if(av>vN){vN++;used++;continue;}break;}
+    const slots=[];
+    for(let i=0;i<rN;i++)slots.push("R");
+    for(let i=0;i<kN;i++)slots.push("K");
+    for(let i=0;i<vN;i++)slots.push("V");
+    return slots;
   }
 
   let specialDayPending=null,day=0;
@@ -837,6 +887,11 @@ function projectReviews(opts,horizonDays){
     if(cur>=60)break;
     day++;
   }
+  return births;
+}
+
+function projectReviews(opts,horizonDays){
+  const births=getLessonBirths(opts,horizonDays);
 
   // Run every item through the SRS pipeline, tallying reviews per day.
   // accuracy comes from opts.guruK indirectly — convert back to an approximate pass probability.
@@ -863,6 +918,47 @@ function projectReviews(opts,horizonDays){
   }
   return daily;
 }
+
+// Capped review queue (Anki-style daily limit). Same lesson schedule and item births as
+// projectReviews, but instead of assuming every due review gets done same-day, this caps
+// how many can be cleared per day. Oldest-overdue-first (FIFO) when the cap is hit; the
+// rest carries into tomorrow's pool alongside newly-due items. Lessons keep happening on
+// schedule regardless of review backlog (per the user's stated approach) — only the level-up
+// date calculation is intentionally left untouched; this only models backlog size.
+function simulateCappedReviews(opts,cap,horizonDays){
+  const births=getLessonBirths(opts,horizonDays).map(b=>({dueDay:b.day,stage:b.stage}));
+  const accuracy=guruKToAccuracy(opts.guruK);
+  births.sort((a,b)=>a.dueDay-b.dueDay);
+
+  let pending=[];
+  let birthIdx=0;
+  const dailyCleared=new Array(horizonDays+1).fill(0);
+  const dailyBacklog=new Array(horizonDays+1).fill(0);
+
+  for(let day=0;day<=horizonDays;day++){
+    while(birthIdx<births.length&&births[birthIdx].dueDay<=day){
+      pending.push({dueDay:births[birthIdx].dueDay,stage:births[birthIdx].stage});
+      birthIdx++;
+    }
+    pending.sort((a,b)=>a.dueDay-b.dueDay); // oldest-overdue first (FIFO)
+    const toClear=pending.slice(0,cap);
+    const remaining=pending.slice(cap);
+    dailyCleared[day]=toClear.length;
+    const next=[];
+    for(const item of toClear){
+      const ok=Math.random()<accuracy;
+      const nextStage=ok?item.stage+1:Math.max(1,item.stage-(item.stage>=5?2:1));
+      if(nextStage<9){
+        next.push({dueDay:day+STAGE_INTERVALS[nextStage-1],stage:nextStage});
+      }
+      // nextStage 9 = burned, leaves the pool
+    }
+    pending=remaining.concat(next);
+    dailyBacklog[day]=pending.length;
+  }
+  return{dailyCleared,dailyBacklog};
+}
+
 function guruKToAccuracy(guruK){
   // inverse of computeRealAccuracy's piecewise mapping (4.0d->90%, 4.5d->85%, 5.5d->75%)
   if(guruK<=4.0)return 0.90;
@@ -1031,6 +1127,59 @@ function renderReviews(o){
   const path=document.createElementNS(ns,"path");path.setAttribute("class","ln");
   path.setAttribute("d","M"+smoothed.map((v,i)=>x(i).toFixed(1)+" "+y(v).toFixed(1)).join(" L"));
   svg.appendChild(path);
+}
+
+function renderCapSim(o){
+  const cap=+$("#revcap").value;
+  $("#revcapv").textContent=cap;
+  // horizon = today through Dec 31 of the current year
+  const now=new Date();
+  const eoy=new Date(now.getFullYear(),11,31);
+  let horizon=Math.round((eoy-now)/86400000);
+  if(horizon<30)horizon=30; // guard for late-Dec runs so the chart isn't degenerate
+
+  const {dailyCleared,dailyBacklog}=simulateCappedReviews(o,cap,horizon);
+
+  const backlogEOY=Math.round(dailyBacklog[horizon]);
+  const peak=Math.round(Math.max(...dailyBacklog));
+  // "stabilizes" if backlog growth has flattened over the final 14 days (not still climbing fast)
+  const tailGrowth=dailyBacklog[horizon]-dailyBacklog[Math.max(0,horizon-14)];
+  const stabilized=tailGrowth<cap*0.5; // grew by less than half a day's cap over 2 weeks = roughly flat
+
+  $("#capBacklogEOY").textContent=backlogEOY;
+  $("#capBacklogPeak").textContent=peak;
+  $("#capVerdict").textContent=stabilized?"yes":"no";
+  $("#capVerdict").style.color=stabilized?"var(--good)":"var(--warn)";
+
+  const W=600,H=110,pL=30,pB=16,pT=6,pR=6;
+  const maxY=Math.max(...dailyBacklog,10)*1.1;
+  const x=d=>pL+(d/horizon)*(W-pL-pR);
+  const y=v=>pT+(1-v/maxY)*(H-pT-pB);
+  const svg=$("#capChart");svg.innerHTML="";
+  const ns="http://www.w3.org/2000/svg";
+  for(const frac of [0,0.5,1]){
+    const val=maxY*frac,yy=y(val);
+    const gl=document.createElementNS(ns,"line");gl.setAttribute("class","gl");
+    gl.setAttribute("x1",pL);gl.setAttribute("x2",W-pR);gl.setAttribute("y1",yy);gl.setAttribute("y2",yy);svg.appendChild(gl);
+    const t=document.createElementNS(ns,"text");t.setAttribute("x",2);t.setAttribute("y",yy+3);t.textContent=Math.round(val);svg.appendChild(t);
+  }
+  const stepDays=Math.max(15,Math.round(horizon/5/15)*15);
+  for(let m=0;m<=horizon;m+=stepDays){
+    const xx=x(m);
+    const t=document.createElementNS(ns,"text");t.setAttribute("x",xx);t.setAttribute("y",H-2);t.setAttribute("text-anchor","middle");
+    t.textContent=addDays(m).toLocaleDateString(undefined,{month:"short",day:"numeric"});svg.appendChild(t);
+  }
+  const path=document.createElementNS(ns,"path");path.setAttribute("class","ln");
+  path.setAttribute("d","M"+dailyBacklog.map((v,i)=>x(i).toFixed(1)+" "+y(v).toFixed(1)).join(" L"));
+  svg.appendChild(path);
+  const c=document.createElementNS(ns,"circle");c.setAttribute("class","pt");
+  c.setAttribute("cx",x(horizon));c.setAttribute("cy",y(dailyBacklog[horizon]));c.setAttribute("r",3);
+  svg.appendChild(c);
+
+  $("#capAssume").innerHTML=
+    `FIFO queue, oldest-overdue cleared first · lessons continue at ${o.lpd}/day regardless of backlog · `+
+    `level-up dates above are unaffected by this backlog (shown separately). `+
+    `Horizon: today → Dec 31 (${horizon}d).`;
 }
 
 function renderLeeches(){
