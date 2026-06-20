@@ -727,13 +727,18 @@ function projectReviews(opts,horizonDays){
   const NOW=new Date();
   const daysFromNow=iso=>iso?(new Date(iso)-NOW)/86400000:0;
 
-  // seed: every in-progress (not burned) item gets its real next-review day + current stage
+  // seed: every in-progress (not burned) item is anchored to its REAL next-review date
+  // from WaniKani's available_at — this is exact data, not an estimate, for the first
+  // review of each existing item. Everything after that first review is simulated.
   const births=[];
   for(const a of STATE.asg){
     const d=a.data,s=sub[d.subject_id];if(!s)continue;
     if(d.started_at&&d.srs_stage>0&&d.srs_stage<9){
-      const nextDay=Math.max(0,daysFromNow(d.available_at));
-      births.push({day:nextDay,stage:d.srs_stage});
+      // d.available_at is WaniKani's actual scheduled timestamp for this item's next review.
+      // Fallback to day 0 only in the unexpected case it's missing (shouldn't happen for
+      // started+active items, but guards against a null breaking the anchor).
+      const nextDay=d.available_at?Math.max(0,daysFromNow(d.available_at)):0;
+      births.push({day:nextDay,stage:d.srs_stage,anchored:!!d.available_at});
     }
   }
 
@@ -843,7 +848,9 @@ function projectReviews(opts,horizonDays){
     while(stage<9&&t<=horizonDays&&guard<200){
       guard++;
       if(t<0)t=0;
-      const reviewDay=Math.round(t);
+      // bucket into the calendar day this review actually falls on (floor, not round —
+      // a review at 11pm still counts as "that day", matching how a person would see it)
+      const reviewDay=Math.floor(t);
       if(reviewDay>horizonDays)break;
       daily[reviewDay]++;
       const ok=Math.random()<accuracy;
@@ -851,7 +858,7 @@ function projectReviews(opts,horizonDays){
       const interval=nextStage<9?STAGE_INTERVALS[nextStage-1]:null;
       stage=nextStage;
       if(!interval)break;
-      t=t+interval;
+      t=t+interval; // keep fractional precision for the next stage's timing
     }
   }
   return daily;
@@ -911,6 +918,7 @@ function render(){
   $("#foot").innerHTML=
     `Leech score = incorrect ÷ current_streak<sup>1.5</sup>, threshold ≥ 1.0, meaning &amp; reading scored separately (worst shown) — wkstats formula. `+
     `Projection seeded from live assignment states; radical→kanji gating computed from actual component data. Dates assume daily consistency. `+
+    `Review load: existing items' next review is anchored to WaniKani's actual scheduled date (available_at), not estimated; everything after that first review, and all future lessons, is simulated from your accuracy setting. `+
     `Reading/JLPT bands: kanji coverage only (wkstats/Wanilog) — grammar and listening are independent tracks.`;
 
   $("#results").classList.remove("hide");
