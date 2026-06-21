@@ -281,9 +281,9 @@ svg.chart{width:100%;height:145px;display:block}
     <div class="field">
       <label>Accuracy (kanji)</label>
       <select id="acc">
-        <option value="4.0">High (~90%)</option>
-        <option value="4.5" selected>Typical (~85%)</option>
-        <option value="5.5">Low (~75%)</option>
+        <option value="4.0" id="accHigh">High (~90%)</option>
+        <option value="4.5" selected id="accTypical">Typical (~85%)</option>
+        <option value="5.5" id="accLow">Low (~75%)</option>
         <option value="measured" id="accMeasured" disabled>Measured: —</option>
       </select>
     </div>
@@ -528,6 +528,45 @@ function loadCache(){
   }catch(e){return null;}
 }
 
+const SETTINGS_KEY="wk_settings_v1";
+function saveSettings(){
+  try{
+    const picked=$("#acc").selectedOptions[0];
+    const accMode=(picked&&picked.id==="accMeasured")?"measured":"manual";
+    const settings={
+      lpd:$("#lpd").value,
+      levelup:$("#levelup").value,
+      order:$("#order").value,
+      accMode,
+      acc:accMode==="manual"?$("#acc").value:null
+    };
+    localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));
+  }catch(e){
+    console.warn("Settings save failed:",e);
+  }
+}
+let _accRestoredManual=false; // true only when loadSettings() restores a deliberate manual preset
+function loadSettings(){
+  try{
+    const raw=localStorage.getItem(SETTINGS_KEY);
+    if(!raw)return;
+    const s=JSON.parse(raw);
+    if(s.lpd!=null){$("#lpd").value=s.lpd;$("#lpdv").textContent=s.lpd;}
+    if(s.levelup!=null)$("#levelup").value=s.levelup;
+    if(s.order!=null)$("#order").value=s.order;
+    // Accuracy: only restore an explicit manual preset (High/Typical/Low). If the user
+    // had "measured" selected last time, leave the default placeholder here — applyCache
+    // will populate it with the freshly cached measurement, which is the whole point of
+    // "measured" mode (always reflect current real accuracy, not a stale past number).
+    if(s.accMode==="manual"&&s.acc!=null){
+      $("#acc").value=s.acc;
+      _accRestoredManual=true;
+    }
+  }catch(e){
+    console.warn("Settings restore failed:",e);
+  }
+}
+
 function cacheAgeLabel(ts){
   const ms=Date.now()-ts;
   const mins=Math.round(ms/60000);
@@ -549,7 +588,10 @@ function applyCache(cache,token){
     const opt=$("#accMeasured");
     opt.disabled=false;opt.value=String(cache.measuredLag);
     opt.textContent=`Measured: → ${cache.measuredLag.toFixed(2)}d lag (cached)`;
-    $("#acc").value=String(cache.measuredLag);
+    // Only auto-select the measured value if loadSettings() didn't already restore a
+    // deliberate manual preset — otherwise this would silently overwrite that choice
+    // every time the page loads.
+    if(!_accRestoredManual)$("#acc").value=String(cache.measuredLag);
   }
   render();
   showCacheBanner(cache.ts);
@@ -1203,8 +1245,11 @@ function getOpts(){
 }
 
 $("#show").onclick=()=>{const k=$("#key");k.type=k.type==="password"?"text":"password";$("#show").textContent=k.type==="password"?"show":"hide";};
-// Load saved token on page start
+// Load saved token and control settings on page start, before restoring any cached data
+// (so when the cache restore below calls render(), it uses the user's saved preferences
+// rather than the hardcoded HTML defaults).
 const _saved=localStorage.getItem("wk_token");if(_saved){$("#key").value=_saved;}
+loadSettings();
 try{
   const _cache=loadCache();
   if(_cache&&_saved){
@@ -1247,8 +1292,9 @@ $("#recalc").onclick=()=>{
   }
   render();
   if(STATE&&STATE.subs)saveCache();
+  saveSettings();
 };
-["lpd","levelup","order","acc"].forEach(id=>$("#"+id).addEventListener("change",()=>{if(STATE&&STATE.sub)render();}));
+["lpd","levelup","order","acc"].forEach(id=>$("#"+id).addEventListener("change",()=>{saveSettings();if(STATE&&STATE.sub)render();}));
 
 /* ================= ROMAJI -> HIRAGANA (live IME-style conversion) ================= */
 const ROMAJI_MAP={
