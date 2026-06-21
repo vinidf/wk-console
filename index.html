@@ -406,17 +406,46 @@ async function wkAll(path,label){
   return out;
 }
 
-function stageToGuruDays(s){return s>=5?0:({1:3.5,2:3.25,3:2.9,4:2.0}[s]??3.5);}
+// Expected (unbiased) days-to-Guru by current SRS stage, given a real accuracy rate.
+// The Apprentice climb (stage 1->5) is a small absorbing Markov chain: from stage s, a
+// passed review advances to s+1 (prob=accuracy); a missed review drops back to max(1,s-1)
+// (prob=1-accuracy), since WK's penalty factor is 1 below Guru. This solves the exact
+// expected hitting time to stage 5 for each starting stage via a 4x4 linear system --
+// closed-form, not simulated, so it costs nothing at render time. This replaces two
+// previously separate, independently-tuned approximations (a flat GURU_K constant for
+// fresh lessons, and an optimistic "this review will pass" shortcut for in-progress
+// items) with one mathematically derived, internally consistent value driven by the
+// same accuracy setting used everywhere else in the projection.
+const CLIMB_INTERVALS=[4/24,8/24,1,2]; // stage1->2, 2->3, 3->4, 4->5(guru), in days
+function expectedGuruTimes(p){
+  const [I1,I2,I3,I4]=CLIMB_INTERVALS;
+  const A=[[p,-p,0,0],[-(1-p),1,-p,0],[0,-(1-p),1,-p],[0,0,-(1-p),1]];
+  const b=[I1,I2,I3,I4];
+  for(let col=0;col<4;col++){
+    let piv=col;
+    for(let r=col+1;r<4;r++) if(Math.abs(A[r][col])>Math.abs(A[piv][col])) piv=r;
+    [A[col],A[piv]]=[A[piv],A[col]]; [b[col],b[piv]]=[b[piv],b[col]];
+    for(let r=col+1;r<4;r++){
+      const f=A[r][col]/A[col][col];
+      for(let c=col;c<4;c++) A[r][c]-=f*A[col][c];
+      b[r]-=f*b[col];
+    }
+  }
+  const T=[0,0,0,0];
+  for(let r=3;r>=0;r--){
+    let s=b[r];
+    for(let c=r+1;c<4;c++) s-=A[r][c]*T[c];
+    T[r]=s/A[r][r];
+  }
+  return T; // [T(1),T(2),T(3),T(4)]
+}
 // Precise days-until-Guru for an in-progress item, anchored to its REAL next review (available_at).
-// After the available_at review (which advances stage S->S+1 if passed), these are the remaining
-// hours of SRS intervals to climb to Guru (stage 5): stage4->0, stage3->47, stage2->70, stage1->78.
-// Overdue reviews (available_at in the past) are treated as doable now (day 0).
-const GURU_REMAIN_AFTER_H={1:8+23+47,2:23+47,3:47,4:0};
-function preciseGuruDay(stage,availableAt,nowMs){
+function preciseGuruDay(stage,availableAt,nowMs,accuracy){
   if(stage>=5)return 0;
-  if(!availableAt)return stageToGuruDays(stage); // fallback if no schedule data
+  const T=expectedGuruTimes(accuracy);
+  if(!availableAt)return T[stage-1];
   const daysUntil=Math.max(0,(new Date(availableAt)-nowMs)/86400000);
-  return daysUntil+(GURU_REMAIN_AFTER_H[stage]||0)/24;
+  return daysUntil+T[stage-1];
 }
 
 async function fetchAll(token){
@@ -596,7 +625,8 @@ function computeLeeches(){
 */
 function project(opts){
   const {perLevel,sub,aMap,user}=STATE;
-  const L0=user.level,GURU_K=opts.guruK,GURU_R=3.5,LPD=opts.lpd;
+  const accuracy=guruKToAccuracy(opts.guruK);
+  const L0=user.level,GURU_K=expectedGuruTimes(accuracy)[0],GURU_R=3.5,LPD=opts.lpd;
   const levelup=opts.levelup,order=opts.order;
   const R={},KU={},KG={},V={},aR={},aKU={},aKG={},aV={},radguru={},kguru={},ktot={},reached={};
   let cur=L0;
@@ -605,7 +635,7 @@ function project(opts){
   ktot[L0]=perLevel[L0].kUn+perLevel[L0].kGated;kguru[L0]=[];
   for(const a of STATE.asg){
     const d=a.data,s=sub[d.subject_id];if(!s)continue;
-    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW));
+    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW,accuracy));
     if(d.unlocked_at&&!d.started_at){
       const lv=s.level;
       if(s.type==="radical"){R[lv]=(R[lv]||0)+1;aR[lv]=-999;}
@@ -745,7 +775,8 @@ const STAGE_INTERVALS=[4/24,8/24,1,2,7,14,30,120]; // days, stage1->2 ... stage8
 // review-load estimate and the capped-queue backlog simulator so they stay consistent.
 function getLessonBirths(opts,horizonDays){
   const {perLevel,sub,user}=STATE;
-  const L0=user.level,GURU_K=opts.guruK,GURU_R=3.5,LPD=opts.lpd;
+  const accuracy=guruKToAccuracy(opts.guruK);
+  const L0=user.level,GURU_K=expectedGuruTimes(accuracy)[0],GURU_R=3.5,LPD=opts.lpd;
   const levelup=opts.levelup,order=opts.order;
   const R={},KU={},KG={},V={},aR={},aKU={},aKG={},aV={},radguru={},kguru={},ktot={};
   let cur=L0;
@@ -770,7 +801,7 @@ function getLessonBirths(opts,horizonDays){
   ktot[L0]=perLevel[L0].kUn+perLevel[L0].kGated;kguru[L0]=[];
   for(const a of STATE.asg){
     const d=a.data,s=sub[d.subject_id];if(!s)continue;
-    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW.getTime()));
+    if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW.getTime(),accuracy));
     if(d.unlocked_at&&!d.started_at){
       const lv=s.level;
       if(s.type==="radical"){R[lv]=(R[lv]||0)+1;aR[lv]=-999;}
