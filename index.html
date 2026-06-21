@@ -374,6 +374,12 @@ const API="https://api.wanikani.com/v2/";
 const REV={"Wanikani-Revision":"20170710"};
 const $=s=>document.querySelector(s);
 let STATE=null;
+let QUIZ=null; // {items:[{...subject leech info, prompts:[{kind:'meaning'|'reading',answered,correct}]}], idx, results:[]}
+// Declared here (not near its Extra Study usage further down) because buildDerived()
+// resets it on every fresh data load, and buildDerived() can run very early — e.g. from
+// applyCache() during page-load cache restore — well before the script reaches later
+// sections. A late `let` declaration there caused a temporal-dead-zone ReferenceError
+// every time cached data restored on page load, silently wiping the cache as a side effect.
 let leechFilter="all", leechSort={k:"score",dir:-1}, leechPage=0;
 const LEECH_PER_PAGE=10;
 
@@ -520,12 +526,13 @@ function saveCache(){
 }
 
 function loadCache(){
-  try{
-    const raw=localStorage.getItem(CACHE_KEY);
-    if(!raw)return null;
-    const parsed=JSON.parse(raw);
-    return{ts:parsed.ts,...decodeCache(parsed)};
-  }catch(e){return null;}
+  const raw=localStorage.getItem(CACHE_KEY);
+  if(!raw)return null; // genuinely no cache yet — normal, not an error
+  // If raw data exists but fails to parse/decode, let the error propagate to the
+  // caller instead of swallowing it here — otherwise a real failure looks identical
+  // to "never cached," and there's no way to surface it to the user.
+  const parsed=JSON.parse(raw);
+  return{ts:parsed.ts,...decodeCache(parsed)};
 }
 
 const SETTINGS_KEY="wk_settings_v1";
@@ -1258,6 +1265,14 @@ try{
 }catch(e){
   console.warn("Cache restore failed, clearing stale cache:",e);
   try{localStorage.removeItem(CACHE_KEY);}catch(e2){}
+  // Make this visible instead of silently vanishing — a failed restore looks
+  // identical to "no data yet" otherwise, which is confusing when the person
+  // knows they fetched data before.
+  const bar=document.createElement("div");
+  bar.style.cssText=`font-family:var(--mono);font-size:11px;color:var(--warn2);
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:9px 14px;margin-top:14px`;
+  bar.textContent=`⚠ couldn't restore your last session (${e.message||"unknown error"}) — please Fetch & project again.`;
+  $("header").appendChild(bar);
 }
 $("#forget").onclick=e=>{e.preventDefault();localStorage.removeItem("wk_token");localStorage.removeItem(CACHE_KEY);$("#key").value="";$("#forget").textContent="forgotten";const b=$("#cacheBar");if(b)b.remove();};
 $("#lpd").oninput=()=>$("#lpdv").textContent=$("#lpd").value;
@@ -1340,7 +1355,6 @@ function convertRomajiToHiragana(input){
 }
 
 /* ================= EXTRA STUDY (leech drill) ================= */
-let QUIZ=null; // {items:[{...subject leech info, prompts:[{kind:'meaning'|'reading',answered,correct}]}], idx, results:[]}
 
 function pickStudySet(){
   const leeches=STATE.leeches.slice();
