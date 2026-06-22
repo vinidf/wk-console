@@ -699,7 +699,7 @@ function project(opts){
 
   function initLevel(l,day){
     const p=perLevel[l];R[l]=p.rad;KU[l]=p.kUn;KG[l]=p.kGated;V[l]=p.vocab;ktot[l]=p.kUn+p.kGated;
-    aR[l]=day;aKU[l]=day;aKG[l]=1e9;aV[l]=1e9;kguru[l]=[];radguru[l]=1e9;
+    aR[l]=day;aKU[l]=day;aKG[l]=1e9;aV[l]=day;kguru[l]=[];radguru[l]=1e9;
   }
   function allLevels(){return[...new Set([...Object.keys(R),...Object.keys(KU),...Object.keys(KG),...Object.keys(V)].map(Number))].sort((a,b)=>a-b);}
   const kd=(l,day)=>(kguru[l]||[]).reduce((n,g)=>n+(g<=day?1:0),0);
@@ -777,7 +777,10 @@ function project(opts){
     // - "kanji" level-up strategy: same but for ungated kanji (available immediately
     //   on level-up, no radical prerequisite). Spreads across ceil(KU/LPD) days.
     // - "default": just use the order setting from day one.
-    const radPriority=levelup==="radicals"&&avail("R",day)>0;
+    // radPriority: only while the CURRENT level's radicals haven't Guru'd yet.
+    // Once radguru[cur] fires (gated kanji unlock), priority turns off and normal
+    // interleave resumes — so the ungated kanji needed for level-up aren't starved.
+    const radPriority=levelup==="radicals"&&avail("R",day)>0&&radguru[cur]>=1e9;
     // kanji-first: only active while current level's ungated kanji are still pending.
     // turns off once KU[cur]===0, just like radPriority turns off when radicals run out.
     const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
@@ -815,7 +818,7 @@ function project(opts){
       }
     }
     let leveled=false;
-    while(cur<60&&passed(cur,day)){aV[cur]=day;cur++;initLevel(cur,day);reached[cur]=day;leveled=true;}
+    while(cur<60&&passed(cur,day)){cur++;initLevel(cur,day);reached[cur]=day;leveled=true;}
     if(cur>=60)break;
     day++;
   }
@@ -872,7 +875,7 @@ function getLessonBirths(opts,horizonDays){
 
   function initLevel(l,day){
     const p=perLevel[l];R[l]=p.rad;KU[l]=p.kUn;KG[l]=p.kGated;V[l]=p.vocab;ktot[l]=p.kUn+p.kGated;
-    aR[l]=day;aKU[l]=day;aKG[l]=1e9;aV[l]=1e9;kguru[l]=[];radguru[l]=1e9;
+    aR[l]=day;aKU[l]=day;aKG[l]=1e9;aV[l]=day;kguru[l]=[];radguru[l]=1e9;
   }
   function allLevels(){return[...new Set([...Object.keys(R),...Object.keys(KU),...Object.keys(KG),...Object.keys(V)].map(Number))].sort((a,b)=>a-b);}
   const kd=(l,day)=>(kguru[l]||[]).reduce((n,g)=>n+(g<=day?1:0),0);
@@ -914,7 +917,7 @@ function getLessonBirths(opts,horizonDays){
 
   let day=0;
   while(day<=horizonDays+30){ // a little buffer past horizon so late lessons' first reviews aren't cut off
-    const radPriority=levelup==="radicals"&&avail("R",day)>0;
+    const radPriority=levelup==="radicals"&&avail("R",day)>0&&radguru[cur]>=1e9;
     const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
     if(radPriority||kanjiPriority){
       let filled=0;
@@ -954,7 +957,7 @@ function getLessonBirths(opts,horizonDays){
       }
     }
     let leveled=false;
-    while(cur<60&&passed(cur,day)){aV[cur]=day;cur++;initLevel(cur,day);leveled=true;}
+    while(cur<60&&passed(cur,day)){cur++;initLevel(cur,day);leveled=true;}
     if(cur>=60)break;
     day++;
   }
