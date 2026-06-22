@@ -766,25 +766,33 @@ function project(opts){
     return slots;
   }
 
-  let specialDayPending=null,day=0;
+  let day=0;
   while(day<=2200){
-    // Special level-up day: do all radicals OR all ungated kanji immediately
-    if(specialDayPending!=null){
-      const L=specialDayPending;specialDayPending=null;
-      if(levelup==="radicals"&&R[L]>0){
-        R[L]=0;radguru[L]=day+GURU_R;aKG[L]=radguru[L];day++;continue;
-      } else if(levelup==="kanji"){
-        // Do all currently available ungated kanji (ungated = no radical dep this level)
-        const done=KU[L]||0;
-        if(done>0){
-          for(let i=0;i<done;i++)(kguru[L]=kguru[L]||[]).push(day+GURU_K);
-          KU[L]=0;
-        }
-        day++;continue;
+    // Lesson selection:
+    // - "radicals" level-up strategy: radicals take all LPD slots until cleared,
+    //   then remaining slots fill with normal order. This gives ~ceil(R/LPD) days
+    //   of radical-priority before gated kanji unlock — correctly faster than
+    //   interleave trickle (1/day) but not the unrealistic "instant clear" that
+    //   was here before.
+    // - "kanji" level-up strategy: same but for ungated kanji (available immediately
+    //   on level-up, no radical prerequisite). Spreads across ceil(KU/LPD) days.
+    // - "default": just use the order setting from day one.
+    const radPriority=levelup==="radicals"&&avail("R",day)>0;
+    // kanji-first: only active while current level's ungated kanji are still pending.
+    // turns off once KU[cur]===0, just like radPriority turns off when radicals run out.
+    const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
+    if(radPriority||kanjiPriority){
+      let filled=0;
+      // first fill with the priority type up to LPD
+      const prioType=radPriority?"R":"K";
+      while(filled<LPD){const l=bestOf(prioType,day);if(!l)break;doLesson(prioType,l,day);filled++;}
+      // remaining slots fall through to normal order
+      while(filled<LPD){
+        let l=bestOf("R",day);if(l&&prioType!=="R"){doLesson("R",l,day);filled++;continue;}
+        l=bestOf("K",day);if(l){doLesson("K",l,day);filled++;continue;}
+        l=bestOf("V",day);if(l){doLesson("V",l,day);filled++;continue;}break;
       }
-      // default: fall through to normal lesson logic this day
-    }
-    if(order==="strict"){
+    } else if(order==="strict"){
       for(let i=0;i<LPD;i++){const b=bestStrict(day);if(!b)break;doLesson(b[2],b[0],day);}
     } else if(order==="kanji"){
       for(let i=0;i<LPD;i++){
@@ -808,7 +816,6 @@ function project(opts){
     }
     let leveled=false;
     while(cur<60&&passed(cur,day)){aV[cur]=day;cur++;initLevel(cur,day);reached[cur]=day;leveled=true;}
-    if(leveled&&levelup!=="default")specialDayPending=cur;
     if(cur>=60)break;
     day++;
   }
@@ -905,21 +912,20 @@ function getLessonBirths(opts,horizonDays){
     return slots;
   }
 
-  let specialDayPending=null,day=0;
+  let day=0;
   while(day<=horizonDays+30){ // a little buffer past horizon so late lessons' first reviews aren't cut off
-    if(specialDayPending!=null){
-      const L=specialDayPending;specialDayPending=null;
-      if(levelup==="radicals"&&R[L]>0){
-        const n=R[L];R[L]=0;radguru[L]=day+GURU_R;aKG[L]=radguru[L];
-        for(let i=0;i<n;i++)births.push({day:day+STAGE_INTERVALS[0],stage:1});
-        day++;continue;
-      } else if(levelup==="kanji"){
-        const done=KU[L]||0;
-        if(done>0){for(let i=0;i<done;i++){(kguru[L]=kguru[L]||[]).push(day+GURU_K);births.push({day:day+STAGE_INTERVALS[0],stage:1});}KU[L]=0;}
-        day++;continue;
+    const radPriority=levelup==="radicals"&&avail("R",day)>0;
+    const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
+    if(radPriority||kanjiPriority){
+      let filled=0;
+      const prioType=radPriority?"R":"K";
+      while(filled<LPD){const l=bestOf(prioType,day);if(!l)break;doLesson(prioType,l,day);filled++;}
+      while(filled<LPD){
+        let l=bestOf("R",day);if(l&&prioType!=="R"){doLesson("R",l,day);filled++;continue;}
+        l=bestOf("K",day);if(l){doLesson("K",l,day);filled++;continue;}
+        l=bestOf("V",day);if(l){doLesson("V",l,day);filled++;continue;}break;
       }
-    }
-    if(order==="strict"){
+    } else if(order==="strict"){
       for(let i=0;i<LPD;i++){
         let best=null;
         for(const l of allLevels()){
@@ -949,7 +955,6 @@ function getLessonBirths(opts,horizonDays){
     }
     let leveled=false;
     while(cur<60&&passed(cur,day)){aV[cur]=day;cur++;initLevel(cur,day);leveled=true;}
-    if(leveled&&levelup!=="default")specialDayPending=cur;
     if(cur>=60)break;
     day++;
   }
