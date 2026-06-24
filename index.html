@@ -461,14 +461,14 @@ async function fetchAll(token){
   log("Resolving account…");
   const user=(await wkGet(API+"user")).data;setBar(6);
   log(`<span class="ok">✓</span> ${user.username} — level ${user.level}`);
-  log("Fetching level history…");
-  const prog=await wkAll("level_progressions","level_progressions");setBar(12);
-  log("Fetching subject database (radicals · kanji · vocab)…");
-  const subs=await wkAll("subjects?hidden=false","subjects");setBar(55);
-  log("Fetching assignments (SRS state + backlog)…");
-  const asg=await wkAll("assignments","assignments");setBar(78);
-  log("Fetching review statistics (leeches)…");
-  const rstats=await wkAll("review_statistics","review_statistics");setBar(96);
+  log("Fetching level history · subjects · assignments · review statistics in parallel…");
+  const [prog,subs,asg,rstats]=await Promise.all([
+    wkAll("level_progressions","level_progressions"),
+    wkAll("subjects?hidden=false","subjects"),
+    wkAll("assignments","assignments"),
+    wkAll("review_statistics","review_statistics"),
+  ]);
+  setBar(96);
   log(`<span class="ok">✓ done</span> — ${subs.length} subjects · ${asg.length} assignments · ${rstats.length} review records`);
   setBar(100);
   STATE.user=user;STATE.prog=prog;STATE.subs=subs;STATE.asg=asg;STATE.rstats=rstats;
