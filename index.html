@@ -403,7 +403,41 @@ async function wkGet(url){
   throw new Error("Too many retries.");
 }
 async function wkAll(path,label){
-  let url=API+path,out=[];
+  // First page tells us total_count and the per-page size. For endpoints whose IDs
+  // come back contiguous (subjects: 1..N in fixed 1000-id pages), we can compute every
+  // remaining page boundary up front and fetch them all in parallel via page_after_id —
+  // turning ~10 sequential round-trips into one. For endpoints with sparse/non-contiguous
+  // IDs (assignments, review_statistics keyed by subject_id), prediction isn't safe, so we
+  // fall back to the original sequential next_url walk. Either way the result is identical.
+  const first=await wkGet(API+path);
+  let out=[...first.data];
+  const total=first.total_count;
+  log(`<span class="req">GET</span> ${label} · ${out.length}/${total}`);
+  if(!first.pages||!first.pages.next_url||out.length>=total)return out;
+
+  const perPage=first.data.length;
+  const ids=first.data.map(x=>x.id);
+  const contiguous=ids.length>0&&ids[ids.length-1]-ids[0]===ids.length-1;
+
+  if(contiguous){
+    // Predict each subsequent page's page_after_id: last id of page k is firstLast + k*perPage.
+    const firstLast=ids[ids.length-1];
+    const remaining=total-out.length;
+    const morePages=Math.ceil(remaining/perPage);
+    const sep=path.includes("?")?"&":"?";
+    const reqs=[];
+    for(let p=0;p<morePages;p++){
+      const afterId=firstLast+p*perPage;
+      reqs.push(wkGet(`${API}${path}${sep}page_after_id=${afterId}`));
+    }
+    const results=await Promise.all(reqs);
+    for(const d of results)out.push(...d.data);
+    log(`<span class="req">GET</span> ${label} · ${out.length}/${total}`);
+    return out;
+  }
+
+  // Sequential fallback for non-contiguous IDs.
+  let url=first.pages.next_url;
   while(url){
     const d=await wkGet(url);out.push(...d.data);
     log(`<span class="req">GET</span> ${label} · ${out.length}/${d.total_count}`);
