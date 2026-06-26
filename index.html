@@ -321,7 +321,7 @@ svg.chart{width:100%;height:145px;display:block}
           <div class="reviewsec">
             <div class="reviewhead">Review load estimate</div>
             <div class="stats" id="reviewStats">
-              <div class="stat"><div class="v" id="revToday">–</div><div class="k">today</div></div>
+              <div class="stat"><div class="v" id="revToday">–</div><div class="k">due next 24h</div></div>
               <div class="stat"><div class="v" id="revWeek">–</div><div class="k">avg next 7d</div></div>
               <div class="stat"><div class="v gold" id="revSteady">–</div><div class="k">steady-state avg</div></div>
             </div>
@@ -496,16 +496,17 @@ async function fetchAll(token){
   const user=(await wkGet(API+"user")).data;setBar(6);
   log(`<span class="ok">✓</span> ${user.username} — level ${user.level}`);
   log("Fetching level history · subjects · assignments · review statistics in parallel…");
-  const [prog,subs,asg,rstats]=await Promise.all([
+  const [prog,subs,asg,rstats,summary]=await Promise.all([
     wkAll("level_progressions","level_progressions"),
     wkAll("subjects?hidden=false","subjects"),
     wkAll("assignments","assignments"),
     wkAll("review_statistics","review_statistics"),
+    wkGet(API+"summary").then(d=>d.data).catch(()=>null), // real next-24h review schedule; non-fatal if unavailable
   ]);
   setBar(96);
   log(`<span class="ok">✓ done</span> — ${subs.length} subjects · ${asg.length} assignments · ${rstats.length} review records`);
   setBar(100);
-  STATE.user=user;STATE.prog=prog;STATE.subs=subs;STATE.asg=asg;STATE.rstats=rstats;
+  STATE.user=user;STATE.prog=prog;STATE.subs=subs;STATE.asg=asg;STATE.rstats=rstats;STATE.summary=summary;
   buildDerived();
   saveCache();
 }
@@ -531,7 +532,11 @@ function encodeCache(){
     ts:Date.now(),
     user:{level:STATE.user.level,username:STATE.user.username,started_at:STATE.user.started_at},
     prog:compactProg,subs:compactSubs,asg:compactAsg,rstats:compactRstats,
-    measuredLag:STATE.measuredLag||null
+    measuredLag:STATE.measuredLag||null,
+    // compact summary: each review bucket as [available_at_iso, count]. Timestamps are
+    // absolute, so the next-24h figure is recomputed relative to "now" at read time and
+    // naturally ages out as buckets fall into the past.
+    summary:STATE.summary?{reviews:(STATE.summary.reviews||[]).map(r=>[r.available_at,r.subject_ids.length])}:null
   };
 }
 function decodeCache(c){
@@ -548,7 +553,10 @@ function decodeCache(c){
     data:{subject_id,meaning_correct:mc,meaning_incorrect:mi,meaning_current_streak:ms,
       reading_correct:rc,reading_incorrect:ri,reading_current_streak:rs,percentage_correct:pct}}));
   const prog=c.prog.map(([level,unlocked_at,created_at,passed_at])=>({data:{level,unlocked_at,created_at,passed_at}}));
-  return{user:c.user,prog,subs,asg,rstats,measuredLag:c.measuredLag};
+  // reconstruct summary in the same shape the live endpoint returns (subject_ids as an
+  // array of the right length, since only the count matters downstream)
+  const summary=c.summary?{reviews:(c.summary.reviews||[]).map(([available_at,n])=>({available_at,subject_ids:new Array(n).fill(0)}))}:null;
+  return{user:c.user,prog,subs,asg,rstats,measuredLag:c.measuredLag,summary};
 }
 
 function saveCache(){
@@ -622,6 +630,7 @@ function cacheAgeLabel(ts){
 function applyCache(cache,token){
   STATE={token};
   STATE.user=cache.user;STATE.prog=cache.prog;STATE.subs=cache.subs;STATE.asg=cache.asg;STATE.rstats=cache.rstats;
+  STATE.summary=cache.summary||null;
   if(cache.measuredLag)STATE.measuredLag=cache.measuredLag;
   buildDerived();
   $("#controls").classList.remove("dim");
@@ -1165,11 +1174,36 @@ function renderReviews(o){
   }
   const smoothed=daily.map((_,i)=>rollAvg(daily,i,3));
 
-  const today=Math.round(daily[0]);
   const week=smoothed.slice(0,7).reduce((a,b)=>a+b,0)/7;
   const steady=smoothed.slice(HORIZON-14,HORIZON).reduce((a,b)=>a+b,0)/14; // last 2 weeks of horizon as steady-state proxy
 
-  $("#revToday").textContent=today;
+  // "Coming due" is taken from WaniKani's real review schedule (the summary endpoint),
+  // NOT the stochastic projection — the projection's day-0 value mixes simulated future
+  // lessons with the real queue and runs random pass/fail, which overcounts and ignores
+  // reviews already completed today. The summary gives the actual upcoming schedule:
+  // count every bucket whose available_at is within the next 24h (past-due buckets that
+  // haven't aged out are included as already-waiting).
+  let due24=null,dueNow=null;
+  if(STATE.summary&&STATE.summary.reviews){
+    const now=Date.now(),h24=now+24*3600*1000;
+    due24=0;dueNow=0;
+    for(const r of STATE.summary.reviews){
+      const t=new Date(r.available_at).getTime();
+      const n=r.subject_ids.length;
+      if(t<=h24)due24+=n;      // becomes available within the next 24h (incl. already-due)
+      if(t<=now)dueNow+=n;     // available right now
+    }
+  }
+
+  if(due24!=null){
+    $("#revToday").textContent=due24;
+    // relabel to reflect what it actually is, and surface the "due now" subset as context
+    const lbl=$("#revToday").nextElementSibling;
+    if(lbl)lbl.textContent=dueNow>0?`due next 24h (${dueNow} now)`:"due next 24h";
+  } else {
+    // fallback to the projection if summary unavailable (e.g. very old cache)
+    $("#revToday").textContent=Math.round(daily[0]);
+  }
   $("#revWeek").textContent=Math.round(week);
   $("#revSteady").textContent=Math.round(steady);
 
