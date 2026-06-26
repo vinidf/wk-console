@@ -320,7 +320,6 @@ svg.chart{width:100%;height:145px;display:block}
           <div class="stats">
             <div class="stat"><div class="v" id="stApprentice">–</div><div class="k">apprentice items</div></div>
             <div class="stat"><div class="v" id="stAccSplit">–</div><div class="k">meaning / reading acc</div></div>
-            <div class="stat"><div class="v" id="stEnlSoon">–</div><div class="k">burns due (7d)</div></div>
           </div>
           <div class="srs" id="srsBars"></div>
           <div class="reviewsec">
@@ -1124,19 +1123,6 @@ function renderHealthStats(){
   $("#stAccSplit").innerHTML = (mAcc!=null&&rAcc!=null)
     ? `${mAcc.toFixed(0)}% <span style="color:var(--faint)">/</span> ${rAcc.toFixed(0)}%`
     : "–";
-
-  // 3. Enlightened items burning (reaching stage 9) within 7 days — missing these drops
-  //    them back to Guru, losing ~4 months of progress, so it's a useful heads-up.
-  const now=Date.now(),wk=now+7*86400000;
-  let burnsSoon=0;
-  for(const a of STATE.asg){
-    const d=a.data;
-    if(d.srs_stage===8&&d.available_at){
-      const t=new Date(d.available_at).getTime();
-      if(t<=wk)burnsSoon++;
-    }
-  }
-  $("#stEnlSoon").textContent=burnsSoon;
 }
 
 function renderSRS(){
