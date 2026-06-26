@@ -321,7 +321,6 @@ svg.chart{width:100%;height:145px;display:block}
             <div class="stat"><div class="v" id="stApprentice">–</div><div class="k">apprentice items</div></div>
             <div class="stat"><div class="v" id="stAccSplit">–</div><div class="k">meaning / reading acc</div></div>
             <div class="stat"><div class="v" id="stEnlSoon">–</div><div class="k">burns due (7d)</div></div>
-            <div class="stat"><div class="v gold" id="stBurned">–</div><div class="k">burned</div></div>
           </div>
           <div class="srs" id="srsBars"></div>
           <div class="reviewsec">
@@ -1138,13 +1137,6 @@ function renderHealthStats(){
     }
   }
   $("#stEnlSoon").textContent=burnsSoon;
-
-  // 4. Burned count + percentage of all started items
-  let burned=0,started=0;
-  for(const a of STATE.asg){const s=a.data.srs_stage;if(s>=1)started++;if(s===9)burned++;}
-  $("#stBurned").innerHTML = started
-    ? `${burned} <span style="color:var(--faint);font-size:.7em">${(burned/started*100).toFixed(0)}%</span>`
-    : "0";
 }
 
 function renderSRS(){
