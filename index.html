@@ -265,8 +265,9 @@ svg.chart{width:100%;height:145px;display:block}
     <div class="field">
       <label>On level-up</label>
       <select id="levelup">
+        <option value="burst" selected>Burst 15 — radicals + kanji up to 15 items on level-up</option>
         <option value="default">Default — follow lesson order normally</option>
-        <option value="radicals" selected>Radicals first — do all radicals day 1</option>
+        <option value="radicals">Radicals first — do all radicals day 1</option>
         <option value="kanji">Kanji first — do all ungated kanji day 1</option>
       </select>
     </div>
@@ -823,6 +824,10 @@ function project(opts){
     //   was here before.
     // - "kanji" level-up strategy: same but for ungated kanji (available immediately
     //   on level-up, no radical prerequisite). Spreads across ceil(KU/LPD) days.
+    // - "burst": on the day of level-up, do up to 15 lessons (radicals first, then
+    //   ungated kanji to fill the remainder). After the burst, normal ordering resumes.
+    //   Designed to start radicals+critical kanji Guru climbing immediately regardless
+    //   of how few radicals the level has (handles levels with 0-3 radicals gracefully).
     // - "default": just use the order setting from day one.
     // radPriority: only while the CURRENT level's radicals haven't Guru'd yet.
     // Once radguru[cur] fires (gated kanji unlock), priority turns off and normal
@@ -831,7 +836,26 @@ function project(opts){
     // kanji-first: only active while current level's ungated kanji are still pending.
     // turns off once KU[cur]===0, just like radPriority turns off when radicals run out.
     const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
-    if(radPriority||kanjiPriority){
+    // burst: fires ONLY on the exact day a new level is entered (aR[cur]===day),
+    // and only once per level (turns off the moment the burst cap is reached).
+    const burstActive=levelup==="burst"&&aR[cur]===day&&(R[cur]>0||KU[cur]>0);
+    if(burstActive){
+      const BURST=15;let filled=0;
+      // fill with radicals first
+      while(filled<BURST){const l=bestOf("R",day);if(!l)break;doLesson("R",l,day);filled++;}
+      // top up with ungated kanji
+      while(filled<BURST){const l=bestOf("K",day);if(!l)break;doLesson("K",l,day);filled++;}
+      // remainder of the normal day's LPD (beyond the burst) continues with normal order
+      let extra=LPD;
+      if(order==="kanji"){
+        for(let i=0;i<extra;i++){let l=bestOf("R",day);if(l!=null){doLesson("R",l,day);continue;}l=bestOf("K",day);if(l!=null){doLesson("K",l,day);continue;}l=bestOf("V",day);if(l!=null){doLesson("V",l,day);continue;}break;}
+      } else {
+        const slots=interleaveSlots(day);
+        for(const kind of slots){const l=bestOf(kind,day);if(l!=null)doLesson(kind,l,day);}
+        let f2=slots.length;
+        while(f2<LPD){let l=bestOf("R",day);if(l){doLesson("R",l,day);f2++;continue;}l=bestOf("K",day);if(l){doLesson("K",l,day);f2++;continue;}l=bestOf("V",day);if(l){doLesson("V",l,day);f2++;continue;}break;}
+      }
+    } else if(radPriority||kanjiPriority){
       let filled=0;
       // first fill with the priority type up to LPD
       const prioType=radPriority?"R":"K";
@@ -966,7 +990,16 @@ function getLessonBirths(opts,horizonDays){
   while(day<=horizonDays+30){ // a little buffer past horizon so late lessons' first reviews aren't cut off
     const radPriority=levelup==="radicals"&&avail("R",day)>0&&radguru[cur]>=1e9;
     const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
-    if(radPriority||kanjiPriority){
+    const burstActive=levelup==="burst"&&aR[cur]===day&&(R[cur]>0||KU[cur]>0);
+    if(burstActive){
+      const BURST=15;let filled=0;
+      while(filled<BURST){const l=bestOf("R",day);if(!l)break;doLesson("R",l,day);filled++;}
+      while(filled<BURST){const l=bestOf("K",day);if(!l)break;doLesson("K",l,day);filled++;}
+      const slots=interleaveSlots(day);
+      for(const kind of slots){const l=bestOf(kind,day);if(l!=null)doLesson(kind,l,day);}
+      let f2=slots.length;
+      while(f2<LPD){let l=bestOf("R",day);if(l){doLesson("R",l,day);f2++;continue;}l=bestOf("K",day);if(l){doLesson("K",l,day);f2++;continue;}l=bestOf("V",day);if(l){doLesson("V",l,day);f2++;continue;}break;}
+    } else if(radPriority||kanjiPriority){
       let filled=0;
       const prioType=radPriority?"R":"K";
       while(filled<LPD){const l=bestOf(prioType,day);if(!l)break;doLesson(prioType,l,day);filled++;}
