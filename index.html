@@ -814,8 +814,12 @@ function project(opts){
     return slots;
   }
 
-  let day=0;
+  let day=0,pendingBurst=false;
   while(day<=2200){
+    // Burst 15: fires on the first day AFTER leveling up (pendingBurst set in level-up check).
+    // Radicals fill first, ungated kanji top up to 15, then normal LPD resumes that same day.
+    const burstActive=levelup==="burst"&&pendingBurst;
+    if(burstActive)pendingBurst=false;
     // Lesson selection:
     // - "radicals" level-up strategy: radicals take all LPD slots until cleared,
     //   then remaining slots fill with normal order. This gives ~ceil(R/LPD) days
@@ -833,12 +837,7 @@ function project(opts){
     // Once radguru[cur] fires (gated kanji unlock), priority turns off and normal
     // interleave resumes — so the ungated kanji needed for level-up aren't starved.
     const radPriority=levelup==="radicals"&&avail("R",day)>0&&radguru[cur]>=1e9;
-    // kanji-first: only active while current level's ungated kanji are still pending.
-    // turns off once KU[cur]===0, just like radPriority turns off when radicals run out.
     const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
-    // burst: fires ONLY on the exact day a new level is entered (aR[cur]===day),
-    // and only once per level (turns off the moment the burst cap is reached).
-    const burstActive=levelup==="burst"&&aR[cur]===day&&(R[cur]>0||KU[cur]>0);
     if(burstActive){
       const BURST=15;let filled=0;
       // fill with radicals first
@@ -890,6 +889,7 @@ function project(opts){
     }
     let leveled=false;
     while(cur<60&&passed(cur,day)){cur++;initLevel(cur,day);reached[cur]=day;leveled=true;}
+    if(leveled&&levelup==="burst")pendingBurst=true;
     if(cur>=60)break;
     day++;
   }
@@ -986,11 +986,12 @@ function getLessonBirths(opts,horizonDays){
     return slots;
   }
 
-  let day=0;
+  let day=0,pendingBurst2=false;
   while(day<=horizonDays+30){ // a little buffer past horizon so late lessons' first reviews aren't cut off
+    const burstActive=levelup==="burst"&&pendingBurst2;
+    if(burstActive)pendingBurst2=false;
     const radPriority=levelup==="radicals"&&avail("R",day)>0&&radguru[cur]>=1e9;
     const kanjiPriority=levelup==="kanji"&&KU[cur]>0&&day>=aKU[cur];
-    const burstActive=levelup==="burst"&&aR[cur]===day&&(R[cur]>0||KU[cur]>0);
     if(burstActive){
       const BURST=15;let filled=0;
       while(filled<BURST){const l=bestOf("R",day);if(!l)break;doLesson("R",l,day);filled++;}
@@ -1038,6 +1039,7 @@ function getLessonBirths(opts,horizonDays){
     }
     let leveled=false;
     while(cur<60&&passed(cur,day)){cur++;initLevel(cur,day);leveled=true;}
+    if(leveled&&levelup==="burst")pendingBurst2=true;
     if(cur>=60)break;
     day++;
   }
