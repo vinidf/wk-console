@@ -1223,16 +1223,32 @@ function renderReviews(o){
     }
   }
 
+  // 7-day average from real assignments available_at — far more accurate than the stochastic
+  // simulation for the near term. Every item already in the SRS has a real scheduled
+  // review time; bucket them by calendar day. Items not yet started (future lessons) don't
+  // have an available_at and aren't counted here, so the number reflects exactly what's
+  // already in your review queue, which is what matters for planning the next week.
+  let week7=null;
+  {
+    const now=Date.now();
+    const buckets=new Array(7).fill(0);
+    for(const a of STATE.asg){
+      const avail=a.data.available_at;
+      if(!avail)continue;
+      const dayOffset=Math.floor((new Date(avail).getTime()-now)/86400000);
+      if(dayOffset>=0&&dayOffset<7)buckets[dayOffset]++;
+    }
+    week7=buckets.reduce((s,n)=>s+n,0)/7;
+  }
+
   if(due24!=null){
     $("#revToday").textContent=due24;
-    // relabel to reflect what it actually is, and surface the "due now" subset as context
     const lbl=$("#revToday").nextElementSibling;
     if(lbl)lbl.textContent=dueNow>0?`due next 24h (${dueNow} now)`:"due next 24h";
   } else {
-    // fallback to the projection if summary unavailable (e.g. very old cache)
     $("#revToday").textContent=Math.round(daily[0]);
   }
-  $("#revWeek").textContent=Math.round(week);
+  $("#revWeek").textContent=Math.round(week7??week);
   $("#revSteady").textContent=Math.round(steady);
 
   // chart
