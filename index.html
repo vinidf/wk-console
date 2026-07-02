@@ -490,7 +490,16 @@ function preciseGuruDay(stage,availableAt,nowMs,accuracy){
   const T=expectedGuruTimes(accuracy);
   if(!availableAt)return T[stage-1];
   const daysUntil=Math.max(0,(new Date(availableAt)-nowMs)/86400000);
-  return daysUntil+T[stage-1];
+  // T[stage-1] already includes the standard waiting interval for this stage's next
+  // review — adding it on top of daysUntil double-counts that wait (was inflating
+  // estimates by ~the full stage interval, e.g. +2d for stage-4 items). The correct
+  // expectation conditions on the known review time: wait daysUntil, then either
+  // pass (advance: expected remaining = T[stage] , or 0 if this review Gurus it)
+  // or fail (drop to max(1,stage-1): expected remaining = T of that stage).
+  const p=accuracy;
+  const afterPass=stage===4?0:T[stage];        // T index stage = T(stage+1)
+  const afterFail=T[Math.max(1,stage-1)-1];    // failure penalty: drop 1 stage (min 1)
+  return daysUntil+p*afterPass+(1-p)*afterFail;
 }
 
 async function fetchAll(token){
