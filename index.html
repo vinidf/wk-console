@@ -742,9 +742,14 @@ function project(opts){
   const NOW=Date.now();
 
   ktot[L0]=perLevel[L0].kUn+perLevel[L0].kGated;kguru[L0]=[];
+  const unlockedIds=new Set();
+  let radGuruEst=0; // estimated day the current level's radicals all reach Guru
   for(const a of STATE.asg){
     const d=a.data,s=sub[d.subject_id];if(!s)continue;
+    unlockedIds.add(d.subject_id);
     if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW,accuracy));
+    if(s.level===L0&&s.type==="radical"&&d.srs_stage<5)
+      radGuruEst=Math.max(radGuruEst,preciseGuruDay(d.srs_stage,d.available_at,NOW,accuracy));
     if(d.unlocked_at&&!d.started_at){
       const lv=s.level;
       if(s.type==="radical"){R[lv]=(R[lv]||0)+1;aR[lv]=-999;}
@@ -752,7 +757,25 @@ function project(opts){
       else{V[lv]=(V[lv]||0)+1;aV[lv]=-999;}
     }
   }
-  radguru[L0]=-999;reached[L0]=0;
+  // Locked current-level items (no assignment yet): gated kanji waiting on radicals,
+  // and vocab waiting on kanji. Without these the sim can never reach the level-up
+  // threshold right after a level-up (gated kanji absent from pools entirely).
+  let lockedGated=0,lockedVocab=0;
+  for(const id in sub){
+    const s=sub[id];
+    if(s.level!==L0||unlockedIds.has(+id))continue;
+    if(s.type==="kanji")lockedGated++;
+    else if(s.type==="vocabulary"||s.type==="kana_vocabulary")lockedVocab++;
+  }
+  if(lockedGated>0){
+    KG[L0]=(KG[L0]||0)+lockedGated;
+    // unstarted radicals also need their lessons before climbing; if any radicals are
+    // still in the lesson queue, their guru is at least a lesson-day + full climb away
+    if((R[L0]||0)>0)radGuruEst=Math.max(radGuruEst,expectedGuruTimes(accuracy)[0]);
+    aKG[L0]=radGuruEst; // gated kanji unlock when radicals guru
+  }
+  if(lockedVocab>0){V[L0]=(V[L0]||0)+lockedVocab;aV[L0]=Math.max(aV[L0]??0,radGuruEst);}
+  radguru[L0]=(R[L0]||0)>0?1e9:-999;reached[L0]=0;
 
   function initLevel(l,day){
     const p=perLevel[l];R[l]=p.rad;KU[l]=p.kUn;KG[l]=p.kGated;V[l]=p.vocab;ktot[l]=p.kUn+p.kGated;
@@ -941,9 +964,14 @@ function getLessonBirths(opts,horizonDays){
   }
 
   ktot[L0]=perLevel[L0].kUn+perLevel[L0].kGated;kguru[L0]=[];
+  const unlockedIds2=new Set();
+  let radGuruEst2=0;
   for(const a of STATE.asg){
     const d=a.data,s=sub[d.subject_id];if(!s)continue;
+    unlockedIds2.add(d.subject_id);
     if(s.level===L0&&s.type==="kanji"&&d.started_at)kguru[L0].push(preciseGuruDay(d.srs_stage,d.available_at,NOW.getTime(),accuracy));
+    if(s.level===L0&&s.type==="radical"&&d.srs_stage<5)
+      radGuruEst2=Math.max(radGuruEst2,preciseGuruDay(d.srs_stage,d.available_at,NOW.getTime(),accuracy));
     if(d.unlocked_at&&!d.started_at){
       const lv=s.level;
       if(s.type==="radical"){R[lv]=(R[lv]||0)+1;aR[lv]=-999;}
@@ -951,7 +979,20 @@ function getLessonBirths(opts,horizonDays){
       else{V[lv]=(V[lv]||0)+1;aV[lv]=-999;}
     }
   }
-  radguru[L0]=-999;
+  let lockedGated2=0,lockedVocab2=0;
+  for(const id in sub){
+    const s=sub[id];
+    if(s.level!==L0||unlockedIds2.has(+id))continue;
+    if(s.type==="kanji")lockedGated2++;
+    else if(s.type==="vocabulary"||s.type==="kana_vocabulary")lockedVocab2++;
+  }
+  if(lockedGated2>0){
+    KG[L0]=(KG[L0]||0)+lockedGated2;
+    if((R[L0]||0)>0)radGuruEst2=Math.max(radGuruEst2,expectedGuruTimes(accuracy)[0]);
+    aKG[L0]=radGuruEst2;
+  }
+  if(lockedVocab2>0){V[L0]=(V[L0]||0)+lockedVocab2;aV[L0]=Math.max(aV[L0]??0,radGuruEst2);}
+  radguru[L0]=(R[L0]||0)>0?1e9:-999;
 
   function initLevel(l,day){
     const p=perLevel[l];R[l]=p.rad;KU[l]=p.kUn;KG[l]=p.kGated;V[l]=p.vocab;ktot[l]=p.kUn+p.kGated;
