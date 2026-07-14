@@ -326,7 +326,11 @@ svg.chart{width:100%;height:145px;display:block}
           <div class="reviewsec">
             <div class="reviewhead">Review load estimate</div>
             <div class="stats" id="reviewStats">
-              <div class="stat"><div class="v" id="revToday">–</div><div class="k">due next 24h</div></div>
+              <div class="stat">
+                <div class="v" id="revToday" style="display:none">–</div>
+                <div class="v" id="revTodayHidden" style="cursor:pointer;letter-spacing:.15em;color:var(--dim)" title="click to reveal">••••</div>
+                <div class="k">due next 24h</div>
+              </div>
               <div class="stat"><div class="v" id="revWeek">–</div><div class="k">avg next 7d</div></div>
               <div class="stat"><div class="v gold" id="revSteady">–</div><div class="k">steady-state avg</div></div>
             </div>
@@ -344,6 +348,10 @@ svg.chart{width:100%;height:145px;display:block}
         <div class="panel">
           <h2>Milestones &amp; reading <span class="tag">projected</span></h2>
           <div class="rail" id="rail"></div>
+        </div>
+        <div class="panel" style="margin-top:18px">
+          <h2>Reading accuracy by level <span class="tag" id="accTag">actual</span></h2>
+          <div class="chartwrap"><svg class="chart" id="accChart" viewBox="0 0 600 145" preserveAspectRatio="none"></svg></div>
         </div>
         <div class="panel" style="margin-top:18px">
           <h2>Leeches <span class="tag" id="leechTag"></span></h2>
@@ -1167,6 +1175,7 @@ function render(){
   $("#stProj").textContent=projPace??"–";
 
   renderHealthStats();
+  renderAccuracyChart();
 
   renderSRS();
   renderRail(reached);
@@ -1243,6 +1252,64 @@ function renderRail(reached){
       (rd?`<div class="note"><span class="jlpt">${rd[0]}</span>${rd[1]}</div>`:"")+`</div>`;
   }
   $("#rail").innerHTML=html;
+}
+
+function renderAccuracyChart(){
+  // Reading accuracy per level, built from lifetime review_statistics (no per-review
+  // timestamp history is available via the API — /reviews returns nothing for accounts
+  // past its retention window — so level acts as the time-axis proxy: earlier levels
+  // were studied earlier). Only kanji/vocab/kana_vocabulary have a reading component;
+  // radicals are meaning-only and excluded.
+  const byLevel={};
+  for(const r of STATE.rstats){
+    const d=r.data,s=STATE.sub[d.subject_id];if(!s)continue;
+    const hasReading=s.type==="kanji"||s.type==="vocabulary"||s.type==="kana_vocabulary";
+    if(!hasReading)continue;
+    const lv=s.level;
+    if(!byLevel[lv])byLevel[lv]={c:0,i:0};
+    byLevel[lv].c+=d.reading_correct||0;
+    byLevel[lv].i+=d.reading_incorrect||0;
+  }
+  const levels=Object.keys(byLevel).map(Number).sort((a,b)=>a-b).filter(l=>{const v=byLevel[l];return v.c+v.i>0;});
+  const svg=$("#accChart");svg.innerHTML="";
+  if(levels.length<2){
+    const ns="http://www.w3.org/2000/svg";
+    const t=document.createElementNS(ns,"text");t.setAttribute("x",300);t.setAttribute("y",72);t.setAttribute("text-anchor","middle");
+    t.textContent="Not enough review history yet";svg.appendChild(t);
+    return;
+  }
+  const pts=levels.map(l=>{const v=byLevel[l];return[l,v.c/(v.c+v.i)*100,v.c+v.i];});
+  const W=600,H=145,pL=32,pB=18,pT=8,pR=6;
+  const minL=levels[0],maxL=levels[levels.length-1];
+  const x=l=>pL+((l-minL)/Math.max(1,maxL-minL))*(W-pL-pR);
+  const minAcc=Math.max(0,Math.floor(Math.min(...pts.map(p=>p[1]))/10)*10-5);
+  const y=a=>pT+(1-(a-minAcc)/(100-minAcc))*(H-pT-pB);
+  const ns="http://www.w3.org/2000/svg";
+  for(const acc of [minAcc,Math.round((minAcc+100)/2),100]){
+    const yy=y(acc);
+    const gl=document.createElementNS(ns,"line");gl.setAttribute("class","gl");
+    gl.setAttribute("x1",pL);gl.setAttribute("x2",W-pR);gl.setAttribute("y1",yy);gl.setAttribute("y2",yy);svg.appendChild(gl);
+    const t=document.createElementNS(ns,"text");t.setAttribute("x",2);t.setAttribute("y",yy+3);t.textContent=acc+"%";svg.appendChild(t);
+  }
+  for(const l of levels){
+    const xx=x(l);
+    const t=document.createElementNS(ns,"text");t.setAttribute("x",xx);t.setAttribute("y",H-4);t.setAttribute("text-anchor","middle");
+    t.textContent="L"+l;svg.appendChild(t);
+  }
+  const path=document.createElementNS(ns,"path");path.setAttribute("class","ln");
+  path.setAttribute("d","M"+pts.map(p=>x(p[0]).toFixed(1)+" "+y(p[1]).toFixed(1)).join(" L"));
+  svg.appendChild(path);
+  for(const p of pts){
+    const c=document.createElementNS(ns,"circle");c.setAttribute("class","pt");
+    c.setAttribute("cx",x(p[0]));c.setAttribute("cy",y(p[1]));c.setAttribute("r",p[0]===maxL?3:2);
+    svg.appendChild(c);
+    const title=document.createElementNS(ns,"title");
+    title.textContent=`L${p[0]}: ${p[1].toFixed(1)}% (${p[2]} reviews)`;
+    c.appendChild(title);
+  }
+  const overall=pts.reduce((a,p)=>a+p[2],0)?pts.reduce((a,p)=>a+p[1]*p[2],0)/pts.reduce((a,p)=>a+p[2],0):null;
+  const tag=$("#accTag");
+  if(tag&&overall!=null)tag.textContent=`${overall.toFixed(1)}% overall`;
 }
 
 function renderChart(reached){
@@ -1326,6 +1393,9 @@ function renderReviews(o){
     week7=buckets.reduce((s,n)=>s+n,0)/7;
   }
 
+  // always reset to hidden state — revealed only by explicit user confirmation
+  $("#revToday").style.display="none";
+  $("#revTodayHidden").style.display="";
   if(due24!=null){
     $("#revToday").textContent=due24;
     const lbl=$("#revToday").nextElementSibling;
@@ -1483,6 +1553,10 @@ try{
   $("header").appendChild(bar);
 }
 $("#forget").onclick=e=>{e.preventDefault();localStorage.removeItem("wk_token");localStorage.removeItem(CACHE_KEY);$("#key").value="";$("#forget").textContent="forgotten";const b=$("#cacheBar");if(b)b.remove();};
+$("#revTodayHidden").onclick=()=>{
+  if(confirm("Are you sure you want to see this?"))
+    {$("#revTodayHidden").style.display="none";$("#revToday").style.display="";}
+};
 $("#lpd").oninput=()=>$("#lpdv").textContent=$("#lpd").value;
 document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{
   document.querySelectorAll(".chip").forEach(x=>x.classList.remove("on"));c.classList.add("on");
