@@ -1383,14 +1383,33 @@ function renderReviews(o){
   let week7=null;
   {
     const now=Date.now();
-    const buckets=new Array(7).fill(0);
+    // For each started item, simulate its full review cycle over the next 7 days.
+    // The bucket approach (counting one available_at per item) undercounts because
+    // Apprentice items cycle through multiple reviews within 7 days — a stage-1 item
+    // generates reviews at +4h, +8h, +1d, +2d, all within the window. WaniKani only
+    // stores the NEXT review timestamp, so we need to project the subsequent ones.
+    const STAGE_INT=[4/24,8/24,1,2,7,14,30,120]; // days per stage 1-8
+    let totalReviews=0;
+    const h7=now+7*86400000;
     for(const a of STATE.asg){
-      const avail=a.data.available_at;
-      if(!avail)continue;
-      const dayOffset=Math.floor((new Date(avail).getTime()-now)/86400000);
-      if(dayOffset>=0&&dayOffset<7)buckets[dayOffset]++;
+      const d=a.data;
+      if(!d.available_at||!d.started_at)continue;
+      let stage=d.srs_stage;
+      let t=new Date(d.available_at).getTime();
+      // Walk forward through review intervals within the 7-day window
+      while(t<=h7&&stage>=1&&stage<=8){
+        if(t>=now)totalReviews++;      // counts as an upcoming review
+        stage=Math.min(9,stage+1);     // assume pass (conservative — failure would add more)
+        const interval=STAGE_INT[stage-1];
+        if(!interval)break;
+        t+=interval*86400000;
+      }
     }
-    week7=buckets.reduce((s,n)=>s+n,0)/7;
+    // Add new lesson reviews: each lesson done in the next 7 days generates 4 reviews
+    // within the window (stages 1-4 intervals: 4h, 8h, 1d, 2d — all land within 7 days).
+    const lpd=+$("#lpd").value;
+    totalReviews+=lpd*7*4;
+    week7=totalReviews/7;
   }
 
   // always reset to hidden state — revealed only by explicit user confirmation
