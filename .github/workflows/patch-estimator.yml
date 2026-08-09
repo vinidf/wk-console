@@ -1,0 +1,160 @@
+name: Patch estimator
+
+on:
+  push:
+    paths:
+      - .github/workflows/patch-estimator.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply changes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("index.html")
+          s = p.read_text()
+
+          old = '''        <option value="burst" selected>Burst 15 — radicals + kanji up to 15 items on level-up</option>
+        <option value="default">Default — follow lesson order normally</option>
+        <option value="radicals">Radicals first — do all radicals day 1</option>'''
+          new = '''        <option value="default">Default — follow lesson order normally</option>
+        <option value="radicals" selected>Radicals first — prioritize radicals within daily lessons</option>'''
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          s = s.replace('<div class="k">projected days/level</div>', '<div class="k">days to next level</div>', 1)
+          s = s.replace('if(s.levelup!=null)$("#levelup").value=s.levelup;', 'if(s.levelup!=null)$("#levelup").value=s.levelup==="burst"?"radicals":s.levelup;', 1)
+
+          old_header = 'const L0=user.level,GURU_K=expectedGuruTimes(accuracy)[0],GURU_R=3.5,LPD=opts.lpd;'
+          new_header = 'const radicalAccuracy=opts.radAcc??accuracy;\n  const L0=user.level,GURU_K=expectedGuruTimes(accuracy)[0],GURU_R=expectedGuruTimes(radicalAccuracy)[0],LPD=opts.lpd;'
+          assert s.count(old_header) == 2
+          s = s.replace(old_header, new_header)
+
+          s = s.replace('preciseGuruDay(d.srs_stage,d.available_at,NOW,accuracy));\n    if(d.unlocked_at&&!d.started_at)', 'preciseGuruDay(d.srs_stage,d.available_at,NOW,radicalAccuracy));\n    if(d.unlocked_at&&!d.started_at)', 1)
+          s = s.replace('preciseGuruDay(d.srs_stage,d.available_at,NOW.getTime(),accuracy));\n    if(d.unlocked_at&&!d.started_at)', 'preciseGuruDay(d.srs_stage,d.available_at,NOW.getTime(),radicalAccuracy));\n    if(d.unlocked_at&&!d.started_at)', 1)
+          s = s.replace('radGuruEst=Math.max(radGuruEst,expectedGuruTimes(accuracy)[0]);', 'radGuruEst=Math.max(radGuruEst,GURU_R);', 1)
+          s = s.replace('radGuruEst2=Math.max(radGuruEst2,expectedGuruTimes(accuracy)[0]);', 'radGuruEst2=Math.max(radGuruEst2,GURU_R);', 1)
+
+          s = s.replace('let day=0,pendingBurst=false;', 'let day=0;', 1)
+          s = s.replace('''    // Burst 15: fires on the first day AFTER leveling up (pendingBurst set in level-up check).
+    // Radicals fill first, ungated kanji top up to 15, then normal LPD resumes that same day.
+    const burstActive=levelup==="burst"&&pendingBurst;
+    if(burstActive)pendingBurst=false;
+''', '', 1)
+          s = re.sub(r'    // - "burst":.*?(?=    // - "default":)', '', s, count=1, flags=re.S)
+          s, n = re.subn(r'    if\(burstActive\)\{.*?\n    \} else if\(radPriority\|\|kanjiPriority\)\{', '    if(radPriority||kanjiPriority){', s, count=1, flags=re.S)
+          assert n == 1
+          s = s.replace('    if(leveled&&levelup==="burst")pendingBurst=true;\n', '', 1)
+
+          s = s.replace('let day=0,pendingBurst2=false;', 'let day=0;', 1)
+          s = s.replace('''    const burstActive=levelup==="burst"&&pendingBurst2;
+    if(burstActive)pendingBurst2=false;
+''', '', 1)
+          s, n = re.subn(r'    if\(burstActive\)\{.*?\n    \} else if\(radPriority\|\|kanjiPriority\)\{', '    if(radPriority||kanjiPriority){', s, count=1, flags=re.S)
+          assert n == 1
+          s = s.replace('    if(leveled&&levelup==="burst")pendingBurst2=true;\n', '', 1)
+
+          s, n = re.subn(r'''function guruKToAccuracy\(guruK\)\{.*?\n\}''', '''function guruKToAccuracy(guruK){
+  let lo=0.5,hi=0.999;
+  for(let i=0;i<32;i++){
+    const mid=(lo+hi)/2;
+    if(expectedGuruTimes(mid)[0]>guruK)lo=mid;else hi=mid;
+  }
+  return (lo+hi)/2;
+}''', s, count=1, flags=re.S)
+          assert n == 1
+
+          s, n = re.subn(r'''function computeRealAccuracy\(\)\{.*?\n\}''', '''function computeRealAccuracy(){
+  let kmC=0,kmI=0,krC=0,krI=0,radC=0,radI=0;
+  for(const r of STATE.rstats){
+    const d=r.data,s=STATE.sub[d.subject_id];
+    if(!s)continue;
+    if(s.type==="kanji"){
+      kmC+=d.meaning_correct;kmI+=d.meaning_incorrect;
+      krC+=d.reading_correct;krI+=d.reading_incorrect;
+    } else if(s.type==="radical"){
+      radC+=d.meaning_correct;radI+=d.meaning_incorrect;
+    }
+  }
+  if(!(kmC+kmI)||!(krC+krI))return null;
+  const meaningAcc=kmC/(kmC+kmI);
+  const readingAcc=krC/(krC+krI);
+  const acc=meaningAcc*readingAcc;
+  const lag=expectedGuruTimes(acc)[0];
+  const radAcc=(radC+radI)?radC/(radC+radI):null;
+  const total=Math.min(kmC,krC);
+  return {acc,lag,total,meaningAcc,readingAcc,radAcc};
+}''', s, count=1, flags=re.S)
+          assert n == 1
+
+          old_get = '''  return{lpd:+$("#lpd").value,levelup:$("#levelup").value,order:$("#order").value,guruK};'''
+          new_get = '''  const picked=$("#acc").selectedOptions[0];
+  const measured=!!(picked&&picked.id==="accMeasured");
+  const radAcc=measured&&STATE&&STATE.measuredRadicalAcc?STATE.measuredRadicalAcc:null;
+  return{lpd:+$("#lpd").value,levelup:$("#levelup").value,order:$("#order").value,guruK,radAcc};'''
+          assert old_get in s
+          s = s.replace(old_get, new_get, 1)
+
+          s = s.replace('measuredLag:STATE.measuredLag||null,', 'measuredLag:STATE.measuredLag||null,\n    measuredRadicalAcc:STATE.measuredRadicalAcc||null,', 1)
+          s = s.replace('return{user:c.user,prog,subs,asg,rstats,measuredLag:c.measuredLag,summary};', 'return{user:c.user,prog,subs,asg,rstats,measuredLag:c.measuredLag,measuredRadicalAcc:c.measuredRadicalAcc,summary};', 1)
+          s = s.replace('if(cache.measuredLag)STATE.measuredLag=cache.measuredLag;', 'if(cache.measuredLag)STATE.measuredLag=cache.measuredLag;\n  if(cache.measuredRadicalAcc)STATE.measuredRadicalAcc=cache.measuredRadicalAcc;', 1)
+          s = s.replace('opt.textContent=`Measured: → ${cache.measuredLag.toFixed(2)}d lag (cached)`;', 'opt.textContent=`Measured: → ${cache.measuredLag.toFixed(2)}d avg (cached)`;', 1)
+
+          old_recalc = '''    STATE.measuredLag=result.lag;
+    const pct=(result.acc*100).toFixed(1);
+    const opt=$("#accMeasured");
+    opt.value=result.lag.toFixed(3);
+    opt.textContent=`Measured: ${pct}% (${result.total} reviews) → ${result.lag.toFixed(2)}d lag`;'''
+          new_recalc = '''    STATE.measuredLag=result.lag;
+    STATE.measuredRadicalAcc=result.radAcc;
+    const pct=(result.acc*100).toFixed(1);
+    const opt=$("#accMeasured");
+    opt.value=result.lag.toFixed(3);
+    opt.textContent=`Measured: ${pct}% clean est. (${result.total} reviews) → ${result.lag.toFixed(2)}d avg`;'''
+          assert old_recalc in s
+          s = s.replace(old_recalc, new_recalc, 1)
+
+          old_stats = '''  $("#stBacklog").textContent=backlog;
+  $("#stPace").textContent=STATE.recentPace;
+  $("#stProj").textContent=projPace??"–";'''
+          new_stats = '''  $("#stBacklog").textContent=backlog;
+  $("#stPace").textContent=STATE.recentPace;
+  $("#stProj").textContent=reached[L0+1]!=null?Math.max(0,Math.ceil(reached[L0+1])):"–";
+  $("#trajTag").textContent=projPace!=null?`future median ${projPace}d/level`:"projected";'''
+          assert old_stats in s
+          s = s.replace(old_stats, new_stats, 1)
+
+          assert 'Burst 15' not in s
+          assert 'pendingBurst' not in s
+          assert 'burstActive' not in s
+          assert s.count('levelup==="burst"') == 0
+          assert s.count('s.levelup==="burst"?"radicals":s.levelup') == 1
+          assert s.count('GURU_R=expectedGuruTimes(radicalAccuracy)[0]') == 2
+          assert s.count('future median ${projPace}d/level') == 1
+
+          p.write_text(s)
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s=Path('index.html').read_text()
+          m=re.search(r'<script>\n(.*)\n</script>',s,re.S)
+          assert m
+          Path('/tmp/wk-console.js').write_text(m.group(1))
+          PY
+          node --check /tmp/wk-console.js
+          rm .github/workflows/patch-estimator.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html .github/workflows/patch-estimator.yml
+          git commit -m "Improve projection defaults and estimates"
+          git push
