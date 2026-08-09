@@ -26,7 +26,7 @@
 
   swap(`  for(let l=L0+1;l<=60;l++)if(reached[l]!=null&&reached[l-1]!=null)deltas.push(reached[l]-reached[l-1]);`,`  for(let l=L0+2;l<=60;l++)if(reached[l]!=null&&reached[l-1]!=null)deltas.push(reached[l]-reached[l-1]);`);
   swap(`  $("#stBacklog").textContent=backlog;\n  $("#stPace").textContent=STATE.recentPace;\n  $("#stProj").textContent=projPace??"–";`,`  $("#stBacklog").textContent=backlog;\n  $("#stPace").textContent=STATE.recentPace;\n  $("#stProj").textContent=reached[L0+1]!=null?Math.max(0,Math.ceil(reached[L0+1])):"–";\n  $("#trajTag").textContent=projPace!=null?` + "`future median ${projPace}d/level`" + `:"projected";`);
-  swap(`opt.textContent=\`Measured: ${pct}% (${result.total} reviews) → ${result.lag.toFixed(2)}d lag\`;`,`opt.textContent=\`Measured clean-review est.: ${pct}% → ${result.lag.toFixed(2)}d avg to Guru\`;`);
+  swap('    opt.textContent=`Measured: ${pct}% (${result.total} reviews) → ${result.lag.toFixed(2)}d lag`;','    opt.textContent=`Measured clean-review est.: ${pct}% → ${result.lag.toFixed(2)}d avg to Guru`;');
 
   document.open();
   document.write(s);
